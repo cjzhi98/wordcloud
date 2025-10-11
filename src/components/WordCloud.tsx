@@ -241,7 +241,6 @@ export default function WordCloud({ entries, containerWidth, containerHeight }: 
         {words.map((word, index) => {
           // For words with multiple colors, show with gradient or primary color
           const primaryColor = word.colors[0];
-          const hasMultipleColors = word.colors.length > 1;
 
           return (
             <div
@@ -267,27 +266,7 @@ export default function WordCloud({ entries, containerWidth, containerHeight }: 
                 }}
                 title={`"${word.displayText}" - submitted ${word.count} time${word.count > 1 ? 's' : ''}`}
               >
-                <span className="relative">
-                  {word.displayText}
-
-                  {/* Multi-color indicator dots */}
-                  {hasMultipleColors && (
-                    <span className="absolute -bottom-2 left-0 right-0 flex justify-center gap-1">
-                      {word.colors.slice(0, 5).map((color, i) => (
-                        <span
-                          key={i}
-                          className="w-2 h-2 rounded-full opacity-60 group-hover:opacity-100 transition-opacity"
-                          style={{ backgroundColor: color }}
-                        />
-                      ))}
-                      {word.colors.length > 5 && (
-                        <span className="text-xs opacity-60 group-hover:opacity-100 transition-opacity">
-                          +{word.colors.length - 5}
-                        </span>
-                      )}
-                    </span>
-                  )}
-                </span>
+                {word.displayText}
               </motion.div>
             </div>
           );

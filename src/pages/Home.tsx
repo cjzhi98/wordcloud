@@ -98,7 +98,7 @@ export default function Home() {
                     transition={{ delay: 1 }}
                     className="mt-12 text-sm text-gray-500 dark:text-gray-400"
                 >
-                    Made with love
+                    Made with ❤️
                 </motion.div>
             </motion.div>
         </div>

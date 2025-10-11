@@ -3,6 +3,7 @@ import { useNavigate, Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { supabase } from '../lib/supabase';
 import type { CreateSessionData } from '../types';
+import { buildShareUrl, slugifyTitle } from '../lib/share';
 
 export default function CreateSession() {
   const navigate = useNavigate();
@@ -35,8 +36,8 @@ export default function CreateSession() {
       if (error) throw error;
 
       if (session) {
-        // Update public_url with the actual session ID
-        const publicUrl = `${window.location.origin}/#/join/${session.id}`;
+        // Update public_url with pretty share URL containing title slug
+        const publicUrl = buildShareUrl(session.id, formData.title || 'session');
         await supabase
           .from('sessions')
           .update({ public_url: publicUrl })

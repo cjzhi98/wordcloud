@@ -4,10 +4,13 @@ import { motion } from 'framer-motion';
 import { QRCodeSVG } from 'qrcode.react';
 import { supabase } from '../lib/supabase';
 import type { Session } from '../types';
+import { buildShareUrl, slugifyTitle } from '../lib/share';
+import * as XLSX from 'xlsx';
 
 export default function Dashboard() {
   const [createdSessions, setCreatedSessions] = useState<Session[]>([]);
   const [joinedSessions, setJoinedSessions] = useState<Session[]>([]);
+  const [disabledSessions, setDisabledSessions] = useState<Session[]>([]);
   const [loading, setLoading] = useState(true);
   const [showQR, setShowQR] = useState<string | null>(null);
 
@@ -20,10 +23,12 @@ export default function Dashboard() {
       // Get session IDs from localStorage (sessions created by this user)
       const createdSessionIds: string[] = JSON.parse(localStorage.getItem('createdSessions') || '[]');
       const joinedSessionIds: string[] = JSON.parse(localStorage.getItem('joinedSessions') || '[]');
+      const disabledIds: string[] = JSON.parse(localStorage.getItem('disabledSessions') || '[]');
 
       // Fetch sessions from Supabase
       let createdData: Session[] = [];
       let joinedData: Session[] = [];
+      let disabledData: Session[] = [];
 
       if (createdSessionIds.length > 0) {
         const { data, error } = await supabase
@@ -32,7 +37,7 @@ export default function Dashboard() {
           .in('id', createdSessionIds)
           .order('created_at', { ascending: false });
         if (error) throw error;
-        createdData = data || [];
+        createdData = (data || []).filter((s) => !disabledIds.includes(s.id));
       }
 
       if (joinedSessionIds.length > 0) {
@@ -45,8 +50,19 @@ export default function Dashboard() {
         joinedData = data || [];
       }
 
+      if (disabledIds.length > 0) {
+        const { data, error } = await supabase
+          .from('sessions')
+          .select('*')
+          .in('id', disabledIds)
+          .order('created_at', { ascending: false });
+        if (error) throw error;
+        disabledData = data || [];
+      }
+
       setCreatedSessions(createdData);
       setJoinedSessions(joinedData);
+      setDisabledSessions(disabledData);
     } catch (err) {
       console.error('Error loading sessions:', err);
     } finally {
@@ -59,30 +75,74 @@ export default function Dashboard() {
     alert('Link copied to clipboard!');
   };
 
-  const deleteSession = async (sessionId: string) => {
-    if (!confirm('Are you sure you want to delete this session? This cannot be undone.')) {
-      return;
+  const disableSession = (sessionId: string) => {
+    if (!confirm('Disable this session? You can restore it later.')) return;
+    const disabledIds: string[] = JSON.parse(localStorage.getItem('disabledSessions') || '[]');
+    if (!disabledIds.includes(sessionId)) {
+      disabledIds.push(sessionId);
+      localStorage.setItem('disabledSessions', JSON.stringify(disabledIds));
     }
+    loadSessions();
+  };
 
+  const permanentlyDeleteSession = async (sessionId: string) => {
+    if (!confirm('Permanently delete this session? This cannot be undone.')) return;
     try {
-      // Delete entries first (cascade might not be set up)
       await supabase.from('entries').delete().eq('session_id', sessionId);
-
-      // Delete session
       const { error } = await supabase.from('sessions').delete().eq('id', sessionId);
-
       if (error) throw error;
-
-      // Remove from localStorage
-      const createdSessionIds = JSON.parse(localStorage.getItem('createdSessions') || '[]');
-      const updatedIds = createdSessionIds.filter((id: string) => id !== sessionId);
-      localStorage.setItem('createdSessions', JSON.stringify(updatedIds));
-
-      // Refresh list
+      const createdIds: string[] = JSON.parse(localStorage.getItem('createdSessions') || '[]');
+      localStorage.setItem('createdSessions', JSON.stringify(createdIds.filter((id) => id !== sessionId)));
+      const disabledIds: string[] = JSON.parse(localStorage.getItem('disabledSessions') || '[]');
+      localStorage.setItem('disabledSessions', JSON.stringify(disabledIds.filter((id) => id !== sessionId)));
       loadSessions();
     } catch (err) {
       console.error('Error deleting session:', err);
       alert('Failed to delete session');
+    }
+  };
+
+  const restoreSession = (sessionId: string) => {
+    const disabledIds: string[] = JSON.parse(localStorage.getItem('disabledSessions') || '[]');
+    localStorage.setItem('disabledSessions', JSON.stringify(disabledIds.filter((id) => id !== sessionId)));
+    loadSessions();
+  };
+
+  const exportExcel = async (session: Session) => {
+    try {
+      const { data, error } = await supabase
+        .from('entries')
+        .select('*')
+        .eq('session_id', session.id)
+        .order('created_at', { ascending: true });
+      if (error) throw error;
+      const entries = data || [];
+
+      const entriesSheet = XLSX.utils.json_to_sheet(entries.map((e) => ({
+        id: e.id,
+        session_id: e.session_id,
+        text: e.text,
+        normalized_text: e.normalized_text,
+        color: e.color,
+        participant_name: e.participant_name,
+        created_at: e.created_at,
+      })));
+
+      const countsMap = new Map<string, number>();
+      for (const e of entries) {
+        const key = e.normalized_text || e.text.toLowerCase();
+        countsMap.set(key, (countsMap.get(key) || 0) + 1);
+      }
+      const countsArr = Array.from(countsMap.entries()).map(([normalized_text, count]) => ({ normalized_text, count }));
+      const countsSheet = XLSX.utils.json_to_sheet(countsArr);
+
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, entriesSheet, 'entries');
+      XLSX.utils.book_append_sheet(wb, countsSheet, 'counts');
+      XLSX.writeFile(wb, `${(session.title || 'session')}.xlsx`);
+    } catch (err) {
+      console.error('Export Excel failed', err);
+      alert('Failed to export Excel');
     }
   };
 
@@ -166,12 +226,12 @@ export default function Dashboard() {
                       </p>
                     </div>
                     <button
-                      onClick={() => deleteSession(session.id)}
-                      className="p-2 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
-                      title="Delete session"
+                      onClick={() => disableSession(session.id)}
+                      className="p-2 text-yellow-600 hover:bg-yellow-50 dark:hover:bg-yellow-900/20 rounded-lg transition-colors"
+                      title="Disable session"
                     >
                       <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 9v6m4-6v6m-7 8h10a2 2 0 002-2V7a2 2 0 00-2-2h-3.586a1 1 0 01-.707-.293l-1.414-1.414A1 1 0 0010.586 3H7a2 2 0 00-2 2v16a2 2 0 002 2z" />
                       </svg>
                     </button>
                   </div>
@@ -185,7 +245,7 @@ export default function Dashboard() {
                         Open Big Screen
                       </Link>
                       <Link
-                        to={`/join/${session.id}`}
+                        to={`/join/${session.id}/${slugifyTitle(session.title || 'session')}`}
                         className="btn-secondary flex-1 text-center text-sm py-2"
                       >
                         Join Session
@@ -194,13 +254,13 @@ export default function Dashboard() {
 
                     <div className="flex gap-2">
                       <button
-                        onClick={() => copyToClipboard(session.public_url)}
+                        onClick={() => copyToClipboard(buildShareUrl(session.id, session.title))}
                         className="btn-secondary flex-1 text-sm py-2 flex items-center justify-center gap-2"
                       >
                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
                         </svg>
-                        Copy Link
+                        Share Link
                       </button>
                       <button
                         onClick={() => setShowQR(showQR === session.id ? null : session.id)}
@@ -213,6 +273,23 @@ export default function Dashboard() {
                       </button>
                     </div>
 
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => exportExcel(session)}
+                        className="btn-secondary flex-1 text-sm py-2"
+                      >
+                        Export Excel
+                      </button>
+                      <a
+                        href={`/#/screen/${session.id}?download=png`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="btn-secondary flex-1 text-sm py-2 text-center"
+                      >
+                        Export PNG
+                      </a>
+                    </div>
+
                     {showQR === session.id && (
                       <motion.div
                         initial={{ opacity: 0, height: 0 }}
@@ -220,7 +297,7 @@ export default function Dashboard() {
                         exit={{ opacity: 0, height: 0 }}
                         className="flex justify-center p-4 bg-white dark:bg-gray-800 rounded-xl"
                       >
-                        <QRCodeSVG value={session.public_url} size={200} />
+                        <QRCodeSVG value={buildShareUrl(session.id, session.title)} size={200} />
                       </motion.div>
                     )}
                   </div>
@@ -293,6 +370,37 @@ export default function Dashboard() {
                     </div>
                   </div>
                 </motion.div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Disabled Sessions */}
+        <div className="mt-10">
+          <h2 className="text-2xl font-bold text-gray-800 dark:text-white mb-4">Disabled Sessions</h2>
+          {disabledSessions.length === 0 ? (
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              className="card text-center py-10"
+            >
+              <p className="text-gray-600 dark:text-gray-400">No disabled sessions</p>
+            </motion.div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {disabledSessions.map((session) => (
+                <div key={session.id} className="card">
+                  <div className="flex items-center justify-between mb-4">
+                    <div>
+                      <div className="font-bold text-lg">{session.title}</div>
+                      <div className="text-xs text-gray-500">Created {new Date(session.created_at).toLocaleDateString()}</div>
+                    </div>
+                    <div className="flex gap-2">
+                      <button className="btn-secondary" onClick={() => restoreSession(session.id)}>Restore</button>
+                      <button className="btn-secondary text-red-600" onClick={() => permanentlyDeleteSession(session.id)}>Delete Permanently</button>
+                    </div>
+                  </div>
+                </div>
               ))}
             </div>
           )}

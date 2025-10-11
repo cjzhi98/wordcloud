@@ -4,6 +4,8 @@ import { motion } from 'framer-motion';
 import { supabase } from '../lib/supabase';
 import WordCloud from '../components/WordCloud';
 import type { Session, Entry } from '../types';
+import { buildShareUrl } from '../lib/share';
+import * as htmlToImage from 'html-to-image';
 
 export default function BigScreen() {
   const { sessionId } = useParams<{ sessionId: string }>();
@@ -14,6 +16,7 @@ export default function BigScreen() {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected'>('disconnected');
   const lastTimestampRef = useRef<string | null>(null);
+  const cloudContainerRef = useRef<HTMLDivElement | null>(null);
 
   // Load session data
   useEffect(() => {
@@ -105,6 +108,27 @@ export default function BigScreen() {
     };
   }, [sessionId]);
 
+  // If opened with ?download=png, export automatically once content is present
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('download') === 'png') {
+      const timer = setTimeout(async () => {
+        if (!cloudContainerRef.current || !session) return;
+        try {
+          const dataUrl = await htmlToImage.toPng(cloudContainerRef.current);
+          const a = document.createElement('a');
+          a.href = dataUrl;
+          const slug = session.title || 'wordcloud';
+          a.download = `${slug}.png`;
+          a.click();
+        } catch (e) {
+          console.error('Auto export PNG failed', e);
+        }
+      }, 1200);
+      return () => clearTimeout(timer);
+    }
+  }, [session, entries.length]);
+
   const toggleFullscreen = () => {
     if (!document.fullscreenElement) {
       document.documentElement.requestFullscreen().then(() => {
@@ -180,12 +204,17 @@ export default function BigScreen() {
               >
                 Home
               </Link>
-              <Link
-                to={`/join/${sessionId}`}
+              <button
+                onClick={() => {
+                  if (!session) return;
+                  const url = buildShareUrl(session.id, session.title);
+                  navigator.clipboard.writeText(url);
+                  alert('Share link copied!');
+                }}
                 className="btn-secondary"
               >
-                Join Session
-              </Link>
+                Share Link
+              </button>
               <button
                 onClick={toggleFullscreen}
                 className="btn-primary flex items-center gap-2"
@@ -194,6 +223,20 @@ export default function BigScreen() {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
                 </svg>
                 Fullscreen
+              </button>
+              <button
+                onClick={async () => {
+                  if (!cloudContainerRef.current || !session) return;
+                  const dataUrl = await htmlToImage.toPng(cloudContainerRef.current);
+                  const a = document.createElement('a');
+                  a.href = dataUrl;
+                  const slug = session.title || 'wordcloud';
+                  a.download = `${slug}.png`;
+                  a.click();
+                }}
+                className="btn-secondary"
+              >
+                Export PNG
               </button>
             </div>
           </div>
@@ -235,7 +278,7 @@ export default function BigScreen() {
             </motion.div>
           )}
 
-          <div className="w-full h-full">
+          <div className="w-full h-full" ref={cloudContainerRef}>
             <WordCloud entries={entries} />
           </div>
 
