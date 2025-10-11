@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { supabase } from '../lib/supabase';
@@ -12,7 +12,8 @@ export default function BigScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
+  const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected'>('disconnected');
+  const lastTimestampRef = useRef<string | null>(null);
 
   // Load session data
   useEffect(() => {
@@ -38,7 +39,11 @@ export default function BigScreen() {
           .order('created_at', { ascending: true });
 
         if (entriesError) throw entriesError;
-        setEntries(entriesData || []);
+        const initial = entriesData || [];
+        setEntries(initial);
+        if (initial.length > 0) {
+          lastTimestampRef.current = initial[initial.length - 1].created_at;
+        }
       } catch (err) {
         console.error('Error loading session:', err);
         setError('Session not found or unable to load');
@@ -49,68 +54,54 @@ export default function BigScreen() {
 
     loadSession();
 
-    // Subscribe to realtime updates with status tracking
-    console.log('[BigScreen] Setting up Realtime subscription for session:', sessionId);
-    setConnectionStatus('connecting');
+    // Always-on polling (no Realtime)
+    let isMounted = true;
+    const fetchNewEntries = async () => {
+      try {
+        let query = supabase
+          .from('entries')
+          .select('*')
+          .eq('session_id', sessionId);
 
-    const channel = supabase
-      .channel(`entries-bigscreen:${sessionId}`, {
-        config: {
-          broadcast: { self: true },
-        },
-      })
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'entries',
-          filter: `session_id=eq.${sessionId}`,
-        },
-        (payload) => {
-          console.log('[BigScreen] Received new entry via Realtime:', payload.new);
-          setEntries((prev) => [...prev, payload.new as Entry]);
+        if (lastTimestampRef.current) {
+          query = query.gt('created_at', lastTimestampRef.current);
         }
-      )
-      .subscribe((status) => {
-        console.log('[BigScreen] Subscription status:', status);
 
-        if (status === 'SUBSCRIBED') {
-          setConnectionStatus('connected');
-          console.log('[BigScreen] ✅ Successfully connected to Realtime');
-        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
-          setConnectionStatus('disconnected');
-          console.error('[BigScreen] ❌ Realtime connection failed:', status);
-        }
-      });
+        const { data, error } = await query.order('created_at', { ascending: true });
+        if (error) throw error;
+        if (!isMounted || !data || data.length === 0) return;
 
-    // Polling mechanism for 100% free operation (no Realtime needed)
-    // This works even without enabling Realtime/Replication in Supabase
-    // Polls every 2 seconds - still well within free tier limits (43k requests/day per user)
-    const pollInterval = setInterval(async () => {
-      if (connectionStatus === 'disconnected') {
-        console.log('[BigScreen] Polling for new entries...');
-        try {
-          const { data } = await supabase
-            .from('entries')
-            .select('*')
-            .eq('session_id', sessionId)
-            .order('created_at', { ascending: true });
-
-          if (data && data.length > entries.length) {
-            console.log('[BigScreen] Found new entries via polling:', data.length - entries.length);
-            setEntries(data);
-          }
-        } catch (err) {
-          console.error('[BigScreen] Polling error:', err);
-        }
+        setEntries((prev) => {
+          const existingIds = new Set(prev.map((e) => e.id));
+          const fresh = data.filter((e) => !existingIds.has(e.id));
+          if (fresh.length === 0) return prev;
+          const merged = [...prev, ...fresh];
+          lastTimestampRef.current = merged[merged.length - 1].created_at;
+          return merged;
+        });
+      } catch (err) {
+        console.error('[BigScreen] Polling error:', err);
       }
-    }, 2000); // Poll every 2 seconds - fast updates, still 100% free!
+    };
+
+    const pollInterval = setInterval(fetchNewEntries, 1000);
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') fetchNewEntries();
+    };
+    const handleFocus = () => fetchNewEntries();
+    const handleOnline = () => fetchNewEntries();
+
+    document.addEventListener('visibilitychange', handleVisibility);
+    window.addEventListener('focus', handleFocus);
+    window.addEventListener('online', handleOnline);
 
     return () => {
-      console.log('[BigScreen] Cleaning up subscription');
+      isMounted = false;
       clearInterval(pollInterval);
-      supabase.removeChannel(channel);
+      document.removeEventListener('visibilitychange', handleVisibility);
+      window.removeEventListener('focus', handleFocus);
+      window.removeEventListener('online', handleOnline);
     };
   }, [sessionId]);
 
@@ -184,6 +175,12 @@ export default function BigScreen() {
             </div>
             <div className="flex gap-3">
               <Link
+                to={`/`}
+                className="btn-secondary"
+              >
+                Home
+              </Link>
+              <Link
                 to={`/join/${sessionId}`}
                 className="btn-secondary"
               >
@@ -238,12 +235,8 @@ export default function BigScreen() {
             </motion.div>
           )}
 
-          <div className="w-full h-full flex items-center justify-center">
-            <WordCloud
-              entries={entries}
-              containerWidth={isFullscreen ? window.innerWidth - 100 : 1200}
-              containerHeight={isFullscreen ? window.innerHeight - 300 : 600}
-            />
+          <div className="w-full h-full">
+            <WordCloud entries={entries} />
           </div>
 
           {/* Stats Footer */}

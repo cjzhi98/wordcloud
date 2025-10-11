@@ -114,7 +114,7 @@ In local `.env` (not committed to GitHub):
 
 ```bash
 VITE_SUPABASE_URL=https://yourproject.supabase.co
-VITE_SUPABASE_KEY=your_anon_key
+VITE_SUPABASE_ANON_KEY=your_anon_key
 ```
 
 In Netlify → **Site Settings → Build & Deploy → Environment Variables**

@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { useParams } from 'react-router-dom';
+import { useState, useEffect, useRef } from 'react';
+import { useParams, useNavigate, Link } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { supabase } from '../lib/supabase';
 import { normalizeText, generateCuteNickname } from '../lib/textNormalization';
@@ -9,6 +9,7 @@ import type { Session, Entry } from '../types';
 
 export default function JoinSession() {
   const { sessionId } = useParams<{ sessionId: string }>();
+  const navigate = useNavigate();
   const [session, setSession] = useState<Session | null>(null);
   const [entries, setEntries] = useState<Entry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -23,8 +24,9 @@ export default function JoinSession() {
   // View mode: 'setup' | 'contributing'
   const [viewMode, setViewMode] = useState<'setup' | 'contributing'>('setup');
 
-  // Realtime connection status
-  const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
+  // Connection status indicator (we use polling only)
+  const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected'>('disconnected');
+  const lastTimestampRef = useRef<string | null>(null);
 
   // Restore participant state from sessionStorage on mount
   useEffect(() => {
@@ -70,7 +72,11 @@ export default function JoinSession() {
           .order('created_at', { ascending: true });
 
         if (entriesError) throw entriesError;
-        setEntries(entriesData || []);
+        const initial = entriesData || [];
+        setEntries(initial);
+        if (initial.length > 0) {
+          lastTimestampRef.current = initial[initial.length - 1].created_at;
+        }
       } catch (err) {
         console.error('Error loading session:', err);
         setError('Session not found or unable to load');
@@ -81,68 +87,54 @@ export default function JoinSession() {
 
     loadSession();
 
-    // Subscribe to realtime updates with status tracking
-    console.log('[JoinSession] Setting up Realtime subscription for session:', sessionId);
-    setConnectionStatus('connecting');
+    // Always-on polling (no Realtime)
+    let isMounted = true;
+    const fetchNewEntries = async () => {
+      try {
+        let query = supabase
+          .from('entries')
+          .select('*')
+          .eq('session_id', sessionId);
 
-    const channel = supabase
-      .channel(`entries:${sessionId}`, {
-        config: {
-          broadcast: { self: true },
-        },
-      })
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'entries',
-          filter: `session_id=eq.${sessionId}`,
-        },
-        (payload) => {
-          console.log('[JoinSession] Received new entry via Realtime:', payload.new);
-          setEntries((prev) => [...prev, payload.new as Entry]);
+        if (lastTimestampRef.current) {
+          query = query.gt('created_at', lastTimestampRef.current);
         }
-      )
-      .subscribe((status) => {
-        console.log('[JoinSession] Subscription status:', status);
 
-        if (status === 'SUBSCRIBED') {
-          setConnectionStatus('connected');
-          console.log('[JoinSession] ✅ Successfully connected to Realtime');
-        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
-          setConnectionStatus('disconnected');
-          console.error('[JoinSession] ❌ Realtime connection failed:', status);
-        }
-      });
+        const { data, error } = await query.order('created_at', { ascending: true });
+        if (error) throw error;
+        if (!isMounted || !data || data.length === 0) return;
 
-    // Polling mechanism for 100% free operation (no Realtime needed)
-    // This works even without enabling Realtime/Replication in Supabase
-    // Polls every 2 seconds - still well within free tier limits (43k requests/day per user)
-    const pollInterval = setInterval(async () => {
-      if (connectionStatus === 'disconnected') {
-        console.log('[JoinSession] Polling for new entries...');
-        try {
-          const { data } = await supabase
-            .from('entries')
-            .select('*')
-            .eq('session_id', sessionId)
-            .order('created_at', { ascending: true });
-
-          if (data && data.length > entries.length) {
-            console.log('[JoinSession] Found new entries via polling:', data.length - entries.length);
-            setEntries(data);
-          }
-        } catch (err) {
-          console.error('[JoinSession] Polling error:', err);
-        }
+        setEntries((prev) => {
+          const existingIds = new Set(prev.map((e) => e.id));
+          const fresh = data.filter((e) => !existingIds.has(e.id));
+          if (fresh.length === 0) return prev;
+          const merged = [...prev, ...fresh];
+          lastTimestampRef.current = merged[merged.length - 1].created_at;
+          return merged;
+        });
+      } catch (err) {
+        console.error('[JoinSession] Polling error:', err);
       }
-    }, 2000); // Poll every 2 seconds - fast updates, still 100% free!
+    };
+
+    const pollInterval = setInterval(fetchNewEntries, 1000);
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') fetchNewEntries();
+    };
+    const handleFocus = () => fetchNewEntries();
+    const handleOnline = () => fetchNewEntries();
+
+    document.addEventListener('visibilitychange', handleVisibility);
+    window.addEventListener('focus', handleFocus);
+    window.addEventListener('online', handleOnline);
 
     return () => {
-      console.log('[JoinSession] Cleaning up subscription');
+      isMounted = false;
       clearInterval(pollInterval);
-      supabase.removeChannel(channel);
+      document.removeEventListener('visibilitychange', handleVisibility);
+      window.removeEventListener('focus', handleFocus);
+      window.removeEventListener('online', handleOnline);
     };
   }, [sessionId]);
 
@@ -166,7 +158,29 @@ export default function JoinSession() {
     sessionStorage.setItem(storageKey, JSON.stringify(participantData));
     console.log('[JoinSession] Saved participant to sessionStorage:', participantData);
 
+    // Track joined sessions in localStorage
+    if (sessionId) {
+      const joinedSessionIds: string[] = JSON.parse(localStorage.getItem('joinedSessions') || '[]');
+      if (!joinedSessionIds.includes(sessionId)) {
+        joinedSessionIds.push(sessionId);
+        localStorage.setItem('joinedSessions', JSON.stringify(joinedSessionIds));
+      }
+    }
+
     setViewMode('contributing');
+  };
+
+  const handleLeaveSession = () => {
+    if (!sessionId) return;
+    const joinedSessionIds: string[] = JSON.parse(localStorage.getItem('joinedSessions') || '[]');
+    const updated = joinedSessionIds.filter((id) => id !== sessionId);
+    localStorage.setItem('joinedSessions', JSON.stringify(updated));
+
+    // Clear participant data for this session
+    const storageKey = `participant_${sessionId}`;
+    sessionStorage.removeItem(storageKey);
+
+    navigate('/');
   };
 
   const handleSubmitWord = async (e: React.FormEvent) => {
@@ -178,17 +192,32 @@ export default function JoinSession() {
       const originalText = textInput.trim();
       const normalizedText = normalizeText(originalText);
 
-      const { error } = await supabase.from('entries').insert([
-        {
-          session_id: sessionId,
-          text: originalText,
-          normalized_text: normalizedText,
-          color: color,
-          participant_name: nickname,
-        },
-      ]);
+      const { data: inserted, error } = await supabase
+        .from('entries')
+        .insert([
+          {
+            session_id: sessionId,
+            text: originalText,
+            normalized_text: normalizedText,
+            color: color,
+            participant_name: nickname,
+          },
+        ])
+        .select()
+        .single();
 
       if (error) throw error;
+
+      // Optimistically update UI for the submitting client
+      if (inserted) {
+        setEntries((prev) => {
+          // Avoid duplicate if Realtime already added it
+          if (prev.some((e) => e.id === inserted.id)) return prev;
+          return [...prev, inserted as Entry];
+        });
+        // Advance cursor to the latest created_at
+        lastTimestampRef.current = inserted.created_at;
+      }
 
       // Clear input on success
       setTextInput('');
@@ -228,6 +257,16 @@ export default function JoinSession() {
   return (
     <div className="min-h-screen p-4 pb-24">
       <div className="max-w-4xl mx-auto">
+        {/* Back to Home */}
+        <Link
+          to="/"
+          className="inline-flex items-center text-gray-600 dark:text-gray-300 hover:text-purple-600 dark:hover:text-purple-400 mb-4 transition-colors"
+        >
+          <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+          </svg>
+          Home
+        </Link>
         {/* Session Header */}
         <motion.div
           initial={{ opacity: 0, y: -20 }}
@@ -314,13 +353,22 @@ export default function JoinSession() {
                       {nickname}
                     </span>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setViewMode('setup')}
-                    className="text-sm text-purple-600 hover:text-purple-700 dark:text-purple-400"
-                  >
-                    Change Name
-                  </button>
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setViewMode('setup')}
+                      className="text-sm text-purple-600 hover:text-purple-700 dark:text-purple-400"
+                    >
+                      Change Name
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleLeaveSession}
+                      className="text-sm text-red-600 hover:text-red-700 dark:text-red-400"
+                    >
+                      Leave Session
+                    </button>
+                  </div>
                 </div>
 
                 {/* Color Picker */}
@@ -385,8 +433,8 @@ export default function JoinSession() {
                     )}
                   </div>
                 </div>
-                <div className="w-full h-[500px] flex items-center justify-center">
-                  <WordCloud entries={entries} containerWidth={800} containerHeight={500} />
+                <div className="w-full h-[500px]">
+                  <WordCloud entries={entries} />
                 </div>
               </div>
             </motion.div>
