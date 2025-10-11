@@ -39,24 +39,31 @@ export default function Home() {
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
                     transition={{ delay: 0.5 }}
-                    className="text-lg text-gray-600 dark:text-gray-300 mb-12 max-w-lg mx-auto font-chinese"
+                    className="text-center mb-12 max-w-lg mx-auto leading-relaxed"
                 >
-                    分享你的想法，看見彼此的心聲
-                    <br />
-                    Share your thoughts, see each other's hearts
+                    <span className="block text-xl font-chinese text-gray-700 dark:text-gray-200 mb-2">
+                        又要彼此相顾，激发爱心，勉励行善。
+                    </span>
+                    <span className="block text-gray-600 dark:text-gray-300 italic">
+                        “And let us consider how we may spur one another on toward love and good deeds.”
+                    </span>
+                    <span className="block mt-2 text-sm text-gray-500 dark:text-gray-400">
+                        — 希伯来书 10:24 Hebrews 10:24
+                    </span>
                 </motion.p>
+
 
                 {/* Action Buttons */}
                 <motion.div
                     initial={{ opacity: 0, y: 20 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ delay: 0.6 }}
-                    className="flex flex-col sm:flex-row gap-4 justify-center"
+                    className="flex flex-col sm:flex-row gap-3 sm:gap-4 justify-center"
                 >
-                    <Link to="/create" className="btn-primary text-lg px-8 py-4">
+                    <Link to="/create" className="btn-primary w-full sm:w-auto">
                         Create New Session
                     </Link>
-                    <Link to="/dashboard" className="btn-secondary text-lg px-8 py-4">
+                    <Link to="/dashboard" className="btn-secondary w-full sm:w-auto">
                         My Sessions
                     </Link>
                 </motion.div>

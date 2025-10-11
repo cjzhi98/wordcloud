@@ -5,6 +5,7 @@ import { QRCodeSVG } from 'qrcode.react';
 import { supabase } from '../lib/supabase';
 import type { Session } from '../types';
 import { buildShareUrl, slugifyTitle } from '../lib/share';
+import Modal from '../components/Modal';
 import * as XLSX from 'xlsx';
 
 export default function Dashboard() {
@@ -13,6 +14,7 @@ export default function Dashboard() {
   const [disabledSessions, setDisabledSessions] = useState<Session[]>([]);
   const [loading, setLoading] = useState(true);
   const [showQR, setShowQR] = useState<string | null>(null);
+  const [shareSession, setShareSession] = useState<Session | null>(null);
 
   useEffect(() => {
     loadSessions();
@@ -72,11 +74,12 @@ export default function Dashboard() {
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
-    alert('Link copied to clipboard!');
   };
 
+  const [confirmAction, setConfirmAction] = useState<null | { type: 'disable' | 'delete'; session: Session }>(null);
+  const [infoMessage, setInfoMessage] = useState<string | null>(null);
+
   const disableSession = (sessionId: string) => {
-    if (!confirm('Disable this session? You can restore it later.')) return;
     const disabledIds: string[] = JSON.parse(localStorage.getItem('disabledSessions') || '[]');
     if (!disabledIds.includes(sessionId)) {
       disabledIds.push(sessionId);
@@ -86,7 +89,6 @@ export default function Dashboard() {
   };
 
   const permanentlyDeleteSession = async (sessionId: string) => {
-    if (!confirm('Permanently delete this session? This cannot be undone.')) return;
     try {
       await supabase.from('entries').delete().eq('session_id', sessionId);
       const { error } = await supabase.from('sessions').delete().eq('id', sessionId);
@@ -98,7 +100,7 @@ export default function Dashboard() {
       loadSessions();
     } catch (err) {
       console.error('Error deleting session:', err);
-      alert('Failed to delete session');
+      setInfoMessage('Failed to delete session');
     }
   };
 
@@ -142,7 +144,7 @@ export default function Dashboard() {
       XLSX.writeFile(wb, `${(session.title || 'session')}.xlsx`);
     } catch (err) {
       console.error('Export Excel failed', err);
-      alert('Failed to export Excel');
+      setInfoMessage('Failed to export Excel');
     }
   };
 
@@ -168,6 +170,7 @@ export default function Dashboard() {
   }
 
   return (
+    <>
     <div className="min-h-screen p-4">
       <div className="max-w-6xl mx-auto">
         {/* Header */}
@@ -226,7 +229,7 @@ export default function Dashboard() {
                       </p>
                     </div>
                     <button
-                      onClick={() => disableSession(session.id)}
+                      onClick={() => setConfirmAction({ type: 'disable', session })}
                       className="p-2 text-yellow-600 hover:bg-yellow-50 dark:hover:bg-yellow-900/20 rounded-lg transition-colors"
                       title="Disable session"
                     >
@@ -237,7 +240,7 @@ export default function Dashboard() {
                   </div>
 
                   <div className="space-y-2">
-                    <div className="flex gap-2">
+                    <div className="grid grid-cols-2 gap-2">
                       <Link
                         to={`/screen/${session.id}`}
                         className="btn-primary flex-1 text-center text-sm py-2"
@@ -252,9 +255,9 @@ export default function Dashboard() {
                       </Link>
                     </div>
 
-                    <div className="flex gap-2">
+                    <div className="grid grid-cols-2 gap-2">
                       <button
-                        onClick={() => copyToClipboard(buildShareUrl(session.id, session.title))}
+                        onClick={() => setShareSession(session)}
                         className="btn-secondary flex-1 text-sm py-2 flex items-center justify-center gap-2"
                       >
                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -397,7 +400,7 @@ export default function Dashboard() {
                     </div>
                     <div className="flex gap-2">
                       <button className="btn-secondary" onClick={() => restoreSession(session.id)}>Restore</button>
-                      <button className="btn-secondary text-red-600" onClick={() => permanentlyDeleteSession(session.id)}>Delete Permanently</button>
+                      <button className="btn-secondary text-red-600" onClick={() => setConfirmAction({ type: 'delete', session })}>Delete Permanently</button>
                     </div>
                   </div>
                 </div>
@@ -407,5 +410,77 @@ export default function Dashboard() {
         </div>
       </div>
     </div>
+    {confirmAction && (
+      <Modal title={confirmAction.type === 'disable' ? 'Disable session?' : 'Permanently delete session?'} onClose={() => setConfirmAction(null)}>
+        <p className="text-gray-600 mb-4">
+          {confirmAction.type === 'disable'
+            ? 'This will hide the session from your Created list. You can restore it later.'
+            : 'This will permanently remove the session and all entries. This cannot be undone.'}
+        </p>
+        <div className="flex gap-2 justify-end">
+          <button className="btn-secondary" onClick={() => setConfirmAction(null)}>Cancel</button>
+          <button
+            className={confirmAction.type === 'delete' ? 'btn-secondary text-red-600' : 'btn-primary'}
+            onClick={async () => {
+              const id = confirmAction.session.id;
+              setConfirmAction(null);
+              if (confirmAction.type === 'disable') {
+                disableSession(id);
+              } else {
+                await permanentlyDeleteSession(id);
+              }
+            }}
+          >
+            Confirm
+          </button>
+        </div>
+      </Modal>
+    )}
+    {infoMessage && (
+      <Modal title="Notice" onClose={() => setInfoMessage(null)}>
+        <p className="text-gray-700">{infoMessage}</p>
+        <div className="flex justify-end mt-4">
+          <button className="btn-primary" onClick={() => setInfoMessage(null)}>OK</button>
+        </div>
+      </Modal>
+    )}
+    {shareSession && (
+      <Modal title="Share this session" onClose={() => setShareSession(null)}>
+        <div className="space-y-4">
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              readOnly
+              value={buildShareUrl(shareSession.id, shareSession.title)}
+              className="input-field flex-1"
+              onFocus={(e) => e.currentTarget.select()}
+            />
+            <button
+              className="btn-secondary"
+              onClick={() => navigator.clipboard.writeText(buildShareUrl(shareSession.id, shareSession.title))}
+            >
+              Copy
+            </button>
+          </div>
+          {typeof navigator !== 'undefined' && (navigator as any).share && (
+            <button
+              className="btn-primary w-full"
+              onClick={() => {
+                const url = buildShareUrl(shareSession.id, shareSession.title);
+                (navigator as any).share({ title: shareSession.title, text: shareSession.description || 'Join my word cloud session', url }).catch(() => {});
+              }}
+            >
+              Share…
+            </button>
+          )}
+          <div className="flex justify-center">
+            <QRCodeSVG value={buildShareUrl(shareSession.id, shareSession.title)} size={180} />
+          </div>
+        </div>
+      </Modal>
+    )}
+    </>
   );
 }
+
+// Modal imported from shared component

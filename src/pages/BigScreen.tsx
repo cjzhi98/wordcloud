@@ -6,6 +6,8 @@ import WordCloud from '../components/WordCloud';
 import type { Session, Entry } from '../types';
 import { buildShareUrl } from '../lib/share';
 import * as htmlToImage from 'html-to-image';
+import { QRCodeSVG } from 'qrcode.react';
+import Modal from '../components/Modal';
 
 export default function BigScreen() {
   const { sessionId } = useParams<{ sessionId: string }>();
@@ -19,6 +21,7 @@ export default function BigScreen() {
   const cloudContainerRef = useRef<HTMLDivElement | null>(null);
   const [showParticipants, setShowParticipants] = useState(false);
   const [showWords, setShowWords] = useState(false);
+  const [showShare, setShowShare] = useState(false);
 
   const participantNames = Array.from(new Set(entries.map(e => e.participant_name))).sort();
   const wordCounts = entries.reduce<Record<string, number>>((acc, e) => {
@@ -205,30 +208,25 @@ export default function BigScreen() {
             <div>
               <h1 className="text-3xl md:text-4xl font-bold mb-2">{session.title}</h1>
               {session.description && (
-                <p className="text-gray-300 text-lg">{session.description}</p>
+                <p className="text-gray-700 text-base sm:text-lg">{session.description}</p>
               )}
             </div>
-            <div className="flex gap-3">
+            <div className="flex gap-2 md:gap-3 flex-wrap">
               <Link
                 to={`/`}
-                className="btn-secondary"
+                className="btn-secondary text-sm md:text-base px-4 py-2"
               >
                 Home
               </Link>
               <button
-                onClick={() => {
-                  if (!session) return;
-                  const url = buildShareUrl(session.id, session.title);
-                  navigator.clipboard.writeText(url);
-                  alert('Share link copied!');
-                }}
-                className="btn-secondary"
+                onClick={() => setShowShare(true)}
+                className="btn-secondary text-sm md:text-base px-4 py-2"
               >
                 Share Link
               </button>
               <button
                 onClick={toggleFullscreen}
-                className="btn-primary flex items-center gap-2"
+                className="btn-primary flex items-center gap-2 text-sm md:text-base px-4 py-2"
               >
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
@@ -245,7 +243,7 @@ export default function BigScreen() {
                   a.download = `${slug}.png`;
                   a.click();
                 }}
-                className="btn-secondary"
+                className="btn-secondary text-sm md:text-base px-4 py-2"
               >
                 Export PNG
               </button>
@@ -300,7 +298,7 @@ export default function BigScreen() {
             transition={{ delay: 0.4 }}
             className="text-center mt-8"
           >
-            <div className="inline-flex items-center gap-6 px-8 py-4 bg-gray-900/10 backdrop-blur-sm rounded-2xl">
+            <div className="inline-flex items-center gap-4 md:gap-6 px-5 md:px-8 py-3 md:py-4 bg-gray-900/10 backdrop-blur-sm rounded-2xl">
               {/* Connection Status */}
               <div className="flex items-center gap-2">
                 {connectionStatus === 'connected' && (
@@ -368,24 +366,45 @@ export default function BigScreen() {
         </ul>
       </Modal>
     )}
+
+    {showShare && session && (
+      <Modal title="Share this session" onClose={() => setShowShare(false)}>
+        <div className="space-y-4">
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              readOnly
+              value={buildShareUrl(session.id, session.title)}
+              className="input-field flex-1"
+              onFocus={(e) => e.currentTarget.select()}
+            />
+            <button
+              className="btn-secondary"
+              onClick={() => navigator.clipboard.writeText(buildShareUrl(session.id, session.title))}
+            >
+              Copy
+            </button>
+          </div>
+          {typeof navigator !== 'undefined' && (navigator as any).share && (
+            <button
+              className="btn-primary w-full"
+              onClick={() => {
+                const url = buildShareUrl(session.id, session.title);
+                (navigator as any).share({ title: session.title, text: session.description || 'Join my word cloud session', url }).catch(() => {});
+              }}
+            >
+              Share…
+            </button>
+          )}
+          <div className="flex justify-center">
+            <QRCodeSVG value={buildShareUrl(session.id, session.title)} size={180} />
+          </div>
+        </div>
+      </Modal>
+    )}
     </>
   );
 }
  
 
-function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
-      <div className="relative bg-white dark:bg-gray-900 rounded-2xl shadow-youth-lg max-w-lg w-[90%] max-h-[80vh] overflow-auto p-6">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-xl font-bold">{title}</h3>
-          <button onClick={onClose} className="p-2 rounded hover:bg-gray-100 dark:hover:bg-gray-800">
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
-          </button>
-        </div>
-        {children}
-      </div>
-    </div>
-  );
-}
+// Modal is now shared in src/components/Modal
