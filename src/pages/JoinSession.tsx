@@ -434,7 +434,7 @@ export default function JoinSession() {
                   </div>
                 </div>
                 <div className="w-full h-[500px]">
-                  <WordCloud entries={entries} />
+                  <WordCloud entries={entries} rotationRangeDeg={0} />
                 </div>
               </div>
             </motion.div>

@@ -6,6 +6,8 @@ interface WordCloudProps {
   entries: Entry[];
   containerWidth?: number; // optional; if not provided, fills parent
   containerHeight?: number; // optional; if not provided, fills parent
+  maxWords?: number; // optional cap to reduce clutter
+  rotationRangeDeg?: number; // default 0 (no rotation)
 }
 
 interface ProcessedWord {
@@ -28,9 +30,10 @@ interface BoundingBox {
   y: number;
   width: number;
   height: number;
+  pad?: number; // extra padding radius reserved around this word
 }
 
-export default function WordCloud({ entries, containerWidth, containerHeight }: WordCloudProps) {
+export default function WordCloud({ entries, containerWidth, containerHeight, maxWords, rotationRangeDeg = 0 }: WordCloudProps) {
   const [words, setWords] = useState<PositionedWord[]>([]);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [measuredSize, setMeasuredSize] = useState<{ w: number; h: number }>({ w: containerWidth ?? 0, h: containerHeight ?? 0 });
@@ -93,8 +96,12 @@ export default function WordCloud({ entries, containerWidth, containerHeight }: 
 
     wordsArray.sort((a, b) => b.count - a.count);
 
-    return wordsArray;
-  }, [entries]);
+    // Cap number of words based on area (or provided maxWords)
+    const area = (containerWidth || measuredSize.w) * (containerHeight || measuredSize.h);
+    const dynamicCap = Math.max(15, Math.min(120, Math.floor(area / 15000)) || 60);
+    const cap = maxWords ?? dynamicCap;
+    return wordsArray.slice(0, cap);
+  }, [entries, containerWidth, containerHeight, measuredSize.w, measuredSize.h, maxWords]);
 
   // Check if two boxes overlap
   const checkCollision = (box1: BoundingBox, box2: BoundingBox, padding = 10): boolean => {
@@ -117,13 +124,16 @@ export default function WordCloud({ entries, containerWidth, containerHeight }: 
     }
 
     const maxCount = Math.max(...processedWords.map(w => w.count));
-    const minFontSize = 20;
-    const maxFontSize = 100;
+    // Responsive font sizing
+    const shortest = Math.min(cw, ch);
+    const minFontSize = Math.max(14, Math.min(24, Math.floor(shortest / 28))); // 14–24px
+    const maxFontSize = Math.max(42, Math.min(160, Math.floor(shortest / 5)));  // 42–160px
 
     const centerX = cw / 2;
     const centerY = ch / 2;
     const positions: PositionedWord[] = [];
     const boundingBoxes: BoundingBox[] = [];
+    const centerClearRadius = shortest * 0.12;
 
     processedWords.forEach((word) => {
       // Calculate font size based on frequency (bigger = more frequent)
@@ -137,7 +147,7 @@ export default function WordCloud({ entries, containerWidth, containerHeight }: 
       // Try to place the word
       let placed = false;
       let attempts = 0;
-      const maxAttempts = 100;
+      const maxAttempts = 200;
 
       while (!placed && attempts < maxAttempts) {
         let x, y;
@@ -147,32 +157,50 @@ export default function WordCloud({ entries, containerWidth, containerHeight }: 
           x = centerX;
           y = centerY;
         } else {
-          // Spiral outward from center
-          const angle = attempts * 0.5;
-          const radius = Math.sqrt(attempts + 1) * 30;
+          // Spiral outward from center with stronger spread and size-aware step
+          const angle = attempts * 0.6;
+          const baseStep = Math.max(24, shortest * 0.03) + fontSize * 0.2;
+          const radius = Math.sqrt(attempts + 1) * baseStep;
           x = centerX + radius * Math.cos(angle);
           y = centerY + radius * Math.sin(angle);
         }
 
         // Create bounding box for this position
+        const pad = Math.max(10, Math.floor(fontSize * 0.25));
         const newBox: BoundingBox = {
           x: x - textWidth / 2,
           y: y - textHeight / 2,
           width: textWidth,
           height: textHeight,
+          pad,
         };
 
-        // Check if it fits in container
+        // Check if it fits in container and respects center hole (except first word)
         if (
           newBox.x >= 0 &&
           newBox.x + newBox.width <= cw &&
           newBox.y >= 0 &&
-          newBox.y + newBox.height <= ch
+          newBox.y + newBox.height <= ch &&
+          (positions.length === 0 || Math.hypot(x - centerX, y - centerY) > centerClearRadius)
         ) {
-          // Check collision with other words
+          // Check collision with other words (inflate boxes by padding)
           let hasCollision = false;
           for (const existingBox of boundingBoxes) {
-            if (checkCollision(newBox, existingBox)) {
+            const p1 = newBox.pad || 10;
+            const p2 = existingBox.pad || 10;
+            const inflatedNew: BoundingBox = {
+              x: newBox.x - p1 / 2,
+              y: newBox.y - p1 / 2,
+              width: newBox.width + p1,
+              height: newBox.height + p1,
+            };
+            const inflatedExisting: BoundingBox = {
+              x: existingBox.x - p2 / 2,
+              y: existingBox.y - p2 / 2,
+              width: existingBox.width + p2,
+              height: existingBox.height + p2,
+            };
+            if (checkCollision(inflatedNew, inflatedExisting)) {
               hasCollision = true;
               break;
             }
@@ -180,7 +208,7 @@ export default function WordCloud({ entries, containerWidth, containerHeight }: 
 
           if (!hasCollision) {
             // Place the word
-            const rotation = (Math.random() - 0.5) * 10; // Less rotation for better readability
+            const rotation = rotationRangeDeg > 0 ? (Math.random() - 0.5) * rotationRangeDeg : 0;
             positions.push({
               ...word,
               x,
@@ -202,7 +230,7 @@ export default function WordCloud({ entries, containerWidth, containerHeight }: 
         const radius = Math.random() * Math.min(cw, ch) * 0.3;
         const x = centerX + radius * Math.cos(angle);
         const y = centerY + radius * Math.sin(angle);
-        const rotation = (Math.random() - 0.5) * 10;
+        const rotation = rotationRangeDeg > 0 ? (Math.random() - 0.5) * rotationRangeDeg : 0;
 
         positions.push({
           ...word,
@@ -263,6 +291,7 @@ export default function WordCloud({ entries, containerWidth, containerHeight }: 
                   fontSize: `${word.fontSize}px`,
                   color: primaryColor,
                   textShadow: '2px 2px 6px rgba(0,0,0,0.2)',
+                  zIndex: Math.floor(word.fontSize), // larger words on top
                 }}
                 title={`"${word.displayText}" - submitted ${word.count} time${word.count > 1 ? 's' : ''}`}
               >
