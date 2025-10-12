@@ -1,24 +1,24 @@
-import { useEffect, useState, useMemo, useRef } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { Entry } from '../types';
+import { processWordCloudData, type ProcessorOptions } from '../lib/wordCloudProcessor';
+import type { SemanticGroup, Tier } from '../lib/semanticGrouping';
 
 interface WordCloudProps {
   entries: Entry[];
-  containerWidth?: number; // optional; if not provided, fills parent
-  containerHeight?: number; // optional; if not provided, fills parent
-  maxWords?: number; // optional cap to reduce clutter
-  rotationRangeDeg?: number; // default 0 (no rotation)
+  containerWidth?: number;
+  containerHeight?: number;
+  maxWords?: number; // For backward compatibility (maps to display mode)
+  rotationRangeDeg?: number;
+  // New advanced props
+  displayMode?: 'overview' | 'balanced' | 'detailed';
+  showPhrases?: boolean;
+  minOccurrence?: number;
+  enableSpamFilter?: boolean;
+  semanticGrouping?: boolean;
 }
 
-interface ProcessedWord {
-  normalizedText: string;
-  displayText: string;
-  count: number;
-  colors: string[];
-  allTexts: string[];
-}
-
-interface PositionedWord extends ProcessedWord {
+interface PositionedGroup extends SemanticGroup {
   x: number;
   y: number;
   fontSize: number;
@@ -30,13 +30,37 @@ interface BoundingBox {
   y: number;
   width: number;
   height: number;
-  pad?: number; // extra padding radius reserved around this word
+  pad?: number;
 }
 
-export default function WordCloud({ entries, containerWidth, containerHeight, maxWords, rotationRangeDeg = 0 }: WordCloudProps) {
-  const [words, setWords] = useState<PositionedWord[]>([]);
+// Tier-based font size ranges (tighter than linear scaling)
+const TIER_FONT_RANGES: Record<Tier, { min: number; max: number; weight: number; opacity: number }> = {
+  S: { min: 80, max: 110, weight: 800, opacity: 1.0 },
+  A: { min: 50, max: 70, weight: 700, opacity: 1.0 },
+  B: { min: 32, max: 48, weight: 600, opacity: 0.95 },
+  C: { min: 24, max: 36, weight: 500, opacity: 0.75 },
+};
+
+export default function WordCloud({
+  entries,
+  containerWidth,
+  containerHeight,
+  maxWords: _maxWords, // Keep for backward compatibility but don't use
+  rotationRangeDeg = 0,
+  displayMode = 'balanced',
+  showPhrases = true,
+  minOccurrence = 2,
+  enableSpamFilter = true,
+  semanticGrouping = true,
+}: WordCloudProps) {
+  const [groups, setGroups] = useState<SemanticGroup[]>([]);
+  const [words, setWords] = useState<PositionedGroup[]>([]);
+  const [processing, setProcessing] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const [measuredSize, setMeasuredSize] = useState<{ w: number; h: number }>({ w: containerWidth ?? 0, h: containerHeight ?? 0 });
+  const [measuredSize, setMeasuredSize] = useState<{ w: number; h: number }>({
+    w: containerWidth ?? 0,
+    h: containerHeight ?? 0
+  });
 
   // Measure parent container if explicit width/height not provided
   useEffect(() => {
@@ -53,55 +77,49 @@ export default function WordCloud({ entries, containerWidth, containerHeight, ma
       }
     });
     ro.observe(el);
-    // Initial measure
     const rect = el.getBoundingClientRect();
     setMeasuredSize({ w: Math.max(0, Math.floor(rect.width)), h: Math.max(0, Math.floor(rect.height)) });
     return () => ro.disconnect();
   }, [containerWidth, containerHeight]);
 
-  // Process entries into word cloud data with multi-color support
-  const processedWords = useMemo(() => {
-    // Group by normalized_text and count frequency
-    const wordMap = new Map<string, {
-      texts: string[];
-      count: number;
-      colors: string[];
-    }>();
-
-    entries.forEach((entry) => {
-      const key = entry.normalized_text || entry.text.toLowerCase();
-      const existing = wordMap.get(key);
-
-      if (existing) {
-        existing.count += 1;
-        existing.colors.push(entry.color);
-        existing.texts.push(entry.text);
-      } else {
-        wordMap.set(key, {
-          texts: [entry.text],
-          count: 1,
-          colors: [entry.color],
-        });
+  // Process entries with new NLP engine
+  useEffect(() => {
+    const processEntries = async () => {
+      if (entries.length === 0) {
+        setGroups([]);
+        return;
       }
-    });
 
-    // Convert to array and sort by frequency (highest first)
-    const wordsArray = Array.from(wordMap.entries()).map(([normalizedText, data]) => ({
-      normalizedText,
-      displayText: data.texts[0],  // Display the first original text
-      allTexts: data.texts,
-      count: data.count,
-      colors: data.colors,
-    }));
+      setProcessing(true);
 
-    wordsArray.sort((a, b) => b.count - a.count);
+      try {
+        const options: Partial<ProcessorOptions> = {
+          displayMode,
+          showPhrases,
+          minOccurrence,
+          enableSpamFilter,
+          semanticGrouping,
+        };
 
-    // Cap number of words based on area (or provided maxWords)
-    const area = (containerWidth || measuredSize.w) * (containerHeight || measuredSize.h);
-    const dynamicCap = Math.max(15, Math.min(120, Math.floor(area / 15000)) || 60);
-    const cap = maxWords ?? dynamicCap;
-    return wordsArray.slice(0, cap);
-  }, [entries, containerWidth, containerHeight, measuredSize.w, measuredSize.h, maxWords]);
+        const processedGroups = await processWordCloudData(entries, options);
+        setGroups(processedGroups);
+      } catch (error) {
+        console.error('[WordCloud] Processing error:', error);
+        setGroups([]);
+      } finally {
+        setProcessing(false);
+      }
+    };
+
+    processEntries();
+  }, [entries, displayMode, showPhrases, minOccurrence, enableSpamFilter, semanticGrouping]);
+
+  // Calculate font size based on tier and count
+  const getFontSize = (group: SemanticGroup, maxCount: number): number => {
+    const range = TIER_FONT_RANGES[group.tier];
+    const ratio = Math.log(group.totalCount + 1) / Math.log(maxCount + 1);
+    return range.min + ratio * (range.max - range.min);
+  };
 
   // Check if two boxes overlap
   const checkCollision = (box1: BoundingBox, box2: BoundingBox, padding = 10): boolean => {
@@ -118,36 +136,36 @@ export default function WordCloud({ entries, containerWidth, containerHeight, ma
     const cw = containerWidth ?? measuredSize.w;
     const ch = containerHeight ?? measuredSize.h;
 
-    if (processedWords.length === 0 || cw === 0 || ch === 0) {
+    if (groups.length === 0 || cw === 0 || ch === 0) {
       setWords([]);
       return;
     }
 
-    const maxCount = Math.max(...processedWords.map(w => w.count));
-    // Responsive font sizing
-    const shortest = Math.min(cw, ch);
-    const minFontSize = Math.max(14, Math.min(24, Math.floor(shortest / 28))); // 14–24px
-    const maxFontSize = Math.max(42, Math.min(160, Math.floor(shortest / 5)));  // 42–160px
-
+    const maxCount = Math.max(...groups.map(g => g.totalCount));
     const centerX = cw / 2;
     const centerY = ch / 2;
-    const positions: PositionedWord[] = [];
+    const positions: PositionedGroup[] = [];
     const boundingBoxes: BoundingBox[] = [];
-    const centerClearRadius = shortest * 0.12;
+    const shortest = Math.min(cw, ch);
+    const centerClearRadius = shortest * 0.10;
 
-    processedWords.forEach((word) => {
-      // Calculate font size based on frequency (bigger = more frequent)
-      const fontSize = minFontSize + ((word.count / maxCount) * (maxFontSize - minFontSize));
+    groups.forEach((group) => {
+      // Calculate font size based on tier
+      const fontSize = getFontSize(group, maxCount);
 
-      // Estimate text width (rough approximation)
+      // Estimate text width
       const avgCharWidth = fontSize * 0.6;
-      const textWidth = word.displayText.length * avgCharWidth;
+      const textWidth = group.displayText.length * avgCharWidth;
       const textHeight = fontSize * 1.2;
 
       // Try to place the word
       let placed = false;
       let attempts = 0;
       const maxAttempts = 200;
+
+      // Tier S gets priority placement (center area)
+      const isTierS = group.tier === 'S';
+      const isTierA = group.tier === 'A';
 
       while (!placed && attempts < maxAttempts) {
         let x, y;
@@ -156,17 +174,29 @@ export default function WordCloud({ entries, containerWidth, containerHeight, ma
           // First word in center
           x = centerX;
           y = centerY;
-        } else {
-          // Spiral outward from center with stronger spread and size-aware step
+        } else if (isTierS && attempts < 50) {
+          // Tier S: try center area first
+          const angle = attempts * 0.8;
+          const radius = Math.sqrt(attempts + 1) * Math.max(30, shortest * 0.04);
+          x = centerX + radius * Math.cos(angle);
+          y = centerY + radius * Math.sin(angle);
+        } else if (isTierA && attempts < 80) {
+          // Tier A: middle ring
           const angle = attempts * 0.6;
-          const baseStep = Math.max(24, shortest * 0.03) + fontSize * 0.2;
+          const radius = centerClearRadius + Math.sqrt(attempts + 1) * Math.max(25, shortest * 0.035);
+          x = centerX + radius * Math.cos(angle);
+          y = centerY + radius * Math.sin(angle);
+        } else {
+          // Tier B/C: outer areas
+          const angle = attempts * 0.5;
+          const baseStep = Math.max(20, shortest * 0.03) + fontSize * 0.15;
           const radius = Math.sqrt(attempts + 1) * baseStep;
           x = centerX + radius * Math.cos(angle);
           y = centerY + radius * Math.sin(angle);
         }
 
-        // Create bounding box for this position
-        const pad = Math.max(10, Math.floor(fontSize * 0.25));
+        // Create bounding box
+        const pad = Math.max(8, Math.floor(fontSize * 0.2));
         const newBox: BoundingBox = {
           x: x - textWidth / 2,
           y: y - textHeight / 2,
@@ -175,19 +205,19 @@ export default function WordCloud({ entries, containerWidth, containerHeight, ma
           pad,
         };
 
-        // Check if it fits in container and respects center hole (except first word)
+        // Check if it fits in container
         if (
           newBox.x >= 0 &&
           newBox.x + newBox.width <= cw &&
           newBox.y >= 0 &&
           newBox.y + newBox.height <= ch &&
-          (positions.length === 0 || Math.hypot(x - centerX, y - centerY) > centerClearRadius)
+          (positions.length === 0 || Math.hypot(x - centerX, y - centerY) > centerClearRadius * 0.5)
         ) {
-          // Check collision with other words (inflate boxes by padding)
+          // Check collision with other words
           let hasCollision = false;
           for (const existingBox of boundingBoxes) {
-            const p1 = newBox.pad || 10;
-            const p2 = existingBox.pad || 10;
+            const p1 = newBox.pad || 8;
+            const p2 = existingBox.pad || 8;
             const inflatedNew: BoundingBox = {
               x: newBox.x - p1 / 2,
               y: newBox.y - p1 / 2,
@@ -210,7 +240,7 @@ export default function WordCloud({ entries, containerWidth, containerHeight, ma
             // Place the word
             const rotation = rotationRangeDeg > 0 ? (Math.random() - 0.5) * rotationRangeDeg : 0;
             positions.push({
-              ...word,
+              ...group,
               x,
               y,
               fontSize,
@@ -224,16 +254,16 @@ export default function WordCloud({ entries, containerWidth, containerHeight, ma
         attempts++;
       }
 
-      // If we couldn't place it after max attempts, place it anyway (fallback)
+      // Fallback placement if couldn't place after max attempts
       if (!placed) {
         const angle = Math.random() * Math.PI * 2;
-        const radius = Math.random() * Math.min(cw, ch) * 0.3;
+        const radius = Math.random() * Math.min(cw, ch) * 0.35;
         const x = centerX + radius * Math.cos(angle);
         const y = centerY + radius * Math.sin(angle);
         const rotation = rotationRangeDeg > 0 ? (Math.random() - 0.5) * rotationRangeDeg : 0;
 
         positions.push({
-          ...word,
+          ...group,
           x,
           y,
           fontSize,
@@ -243,10 +273,26 @@ export default function WordCloud({ entries, containerWidth, containerHeight, ma
     });
 
     setWords(positions);
-  }, [processedWords, containerWidth, containerHeight, measuredSize.w, measuredSize.h]);
+  }, [groups, containerWidth, containerHeight, measuredSize.w, measuredSize.h, rotationRangeDeg]);
 
   const cw = containerWidth ?? measuredSize.w;
   const ch = containerHeight ?? measuredSize.h;
+
+  // Build rich tooltip content
+  const getTooltipContent = (word: PositionedGroup): string => {
+    if (word.variants.length === 1) {
+      return `"${word.displayText}" - ${word.totalCount} mention${word.totalCount > 1 ? 's' : ''}`;
+    }
+
+    const variantList = word.variants
+      .slice(0, 5) // Show top 5 variants
+      .map(v => `• "${v.text}" (${v.count})`)
+      .join('\n');
+
+    const more = word.variants.length > 5 ? `\n... and ${word.variants.length - 5} more` : '';
+
+    return `"${word.displayText}" (${word.totalCount} total)\n${variantList}${more}`;
+  };
 
   return (
     <div
@@ -254,7 +300,18 @@ export default function WordCloud({ entries, containerWidth, containerHeight, ma
       className="relative w-full h-full overflow-hidden"
       style={{ width: containerWidth ? cw : undefined, height: containerHeight ? ch : undefined }}
     >
-      {words.length === 0 && (
+      {/* Loading state */}
+      {processing && (
+        <div className="absolute inset-0 flex items-center justify-center bg-white/50 dark:bg-gray-900/50 z-50">
+          <div className="text-center">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-500 mx-auto mb-2"></div>
+            <p className="text-sm text-gray-600 dark:text-gray-400">Processing...</p>
+          </div>
+        </div>
+      )}
+
+      {/* Empty state */}
+      {!processing && words.length === 0 && (
         <div className="absolute inset-0 flex items-center justify-center">
           <div className="text-center text-gray-400 dark:text-gray-500">
             <svg className="w-20 h-20 mx-auto mb-4 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -265,37 +322,57 @@ export default function WordCloud({ entries, containerWidth, containerHeight, ma
           </div>
         </div>
       )}
+
+      {/* Word cloud */}
       <AnimatePresence>
         {words.map((word, index) => {
-          // For words with multiple colors, show with gradient or primary color
-          const primaryColor = word.colors[0];
+          const tierStyle = TIER_FONT_RANGES[word.tier];
+          const primaryColor = word.colors[0] || '#6366f1'; // Fallback color
+
+          // Progressive animation delays by tier
+          const tierDelays = { S: 0, A: 0.1, B: 0.2, C: 0.3 };
+          const baseDelay = tierDelays[word.tier] || 0;
 
           return (
             <div
-              key={`${word.normalizedText}-${index}`}
+              key={`${word.canonical}-${index}`}
               className="absolute"
               style={{ left: word.x, top: word.y, transform: 'translate(-50%, -50%)' }}
             >
               <motion.div
                 initial={{ opacity: 0, scale: 0 }}
-                animate={{ opacity: 1, scale: 1, rotate: word.rotation }}
+                animate={{
+                  opacity: tierStyle.opacity,
+                  scale: 1,
+                  rotate: word.rotation
+                }}
                 exit={{ opacity: 0, scale: 0 }}
                 transition={{
                   type: "spring",
                   stiffness: 100,
                   damping: 15,
-                  delay: index * 0.03,
+                  delay: baseDelay + index * 0.02,
                 }}
-                className="font-bold whitespace-nowrap select-none font-chinese group cursor-default"
+                className="font-bold whitespace-nowrap select-none font-chinese group cursor-default hover:scale-110 transition-transform"
                 style={{
                   fontSize: `${word.fontSize}px`,
+                  fontWeight: tierStyle.weight,
                   color: primaryColor,
-                  textShadow: '2px 2px 6px rgba(0,0,0,0.2)',
-                  zIndex: Math.floor(word.fontSize), // larger words on top
+                  textShadow: word.tier === 'S' || word.tier === 'A'
+                    ? '3px 3px 10px rgba(0,0,0,0.3)'
+                    : '2px 2px 6px rgba(0,0,0,0.2)',
+                  // Z-index: combine tier priority + fontSize for guaranteed layering
+                  // Large words ALWAYS appear on top of smaller ones
+                  zIndex: (word.tier === 'S' ? 1000 :
+                           word.tier === 'A' ? 800 :
+                           word.tier === 'B' ? 600 : 400) + Math.floor(word.fontSize),
                 }}
-                title={`"${word.displayText}" - submitted ${word.count} time${word.count > 1 ? 's' : ''}`}
+                title={getTooltipContent(word)}
               >
                 {word.displayText}
+                {word.languages.size > 1 && (
+                  <span className="ml-1 text-xs opacity-50">🌐</span>
+                )}
               </motion.div>
             </div>
           );

@@ -1,7 +1,8 @@
 // Client-side text normalization for multilingual phrases (Chinese, English, Malay)
-// Uses compromise for English/Malay root word extraction and custom logic for Chinese
+// Now using advanced multilingualNLP engine with jieba-wasm for Chinese
 
 import nlp from "compromise";
+import { processMultilingual } from "./multilingualNLP";
 // External name generators (with graceful fallback)
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore
@@ -139,12 +140,22 @@ const MALAY_FILLER_WORDS = [
 	"itu",
 ];
 
+/**
+ * Normalize text using the new multilingual NLP engine
+ * This is a wrapper for backward compatibility
+ * @param text - Input text to normalize
+ * @returns Normalized text
+ */
 export function normalizeText(text: string): string {
 	if (!text || typeof text !== "string") {
 		return "";
 	}
 
-	// Step 1: Use compromise for English/Malay normalization
+	// Use the new multilingual NLP engine (async, but we need sync)
+	// For backward compatibility, use simple fallback here
+	// The main processing happens in wordCloudProcessor.ts
+
+	// Step 1: Basic cleanup
 	let normalized = text.trim().toLowerCase();
 
 	// Remove punctuation for all languages
@@ -153,7 +164,7 @@ export function normalizeText(text: string): string {
 		" "
 	);
 
-	// Use compromise to extract root forms and remove common stop words
+	// Use compromise for quick normalization
 	const doc = nlp(normalized);
 	doc.normalize({ punctuation: true, case: true, whitespace: true });
 	normalized = doc.text();
@@ -183,6 +194,27 @@ export function normalizeText(text: string): string {
 	}
 
 	return result;
+}
+
+/**
+ * Async version of normalizeText using the advanced NLP engine
+ * Use this for better Chinese, English, and Malay processing
+ * @param text - Input text to normalize
+ * @returns Promise<string> Normalized text
+ */
+export async function normalizeTextAsync(text: string): Promise<string> {
+	if (!text || typeof text !== "string") {
+		return "";
+	}
+
+	try {
+		const token = await processMultilingual(text);
+		return token.normalized || text.trim().toLowerCase();
+	} catch (error) {
+		console.error("[normalizeTextAsync] Error:", error);
+		// Fallback to synchronous version
+		return normalizeText(text);
+	}
 }
 
 export function generateCuteNickname(): string {

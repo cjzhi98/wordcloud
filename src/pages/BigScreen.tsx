@@ -8,6 +8,7 @@ import { buildShareUrl } from '../lib/share';
 import * as htmlToImage from 'html-to-image';
 import { QRCodeSVG } from 'qrcode.react';
 import Modal from '../components/Modal';
+import { calculateAutoMinOccurrence, analyzeData } from '../lib/autoMinOccurrence';
 
 export default function BigScreen() {
   const { sessionId } = useParams<{ sessionId: string }>();
@@ -23,6 +24,15 @@ export default function BigScreen() {
   const [showWords, setShowWords] = useState(false);
   const [showShare, setShowShare] = useState(false);
 
+  // New NLP settings
+  const [displayMode, setDisplayMode] = useState<'overview' | 'balanced' | 'detailed'>('balanced');
+  const [showPhrases, setShowPhrases] = useState(true);
+  const [minOccMode, setMinOccMode] = useState<'auto' | 'manual'>('auto');
+  const [minOccurrence, setMinOccurrence] = useState(2);
+  const [semanticGrouping, setSemanticGrouping] = useState(true);
+  const [showSettings, setShowSettings] = useState(false);
+  const [exportMode, setExportMode] = useState(false);
+
   const participantNames = Array.from(new Set(entries.map(e => e.participant_name))).sort();
   const wordCounts = entries.reduce<Record<string, number>>((acc, e) => {
     const k = e.normalized_text || e.text.toLowerCase();
@@ -30,6 +40,29 @@ export default function BigScreen() {
     return acc;
   }, {});
   const wordCountArray = Object.entries(wordCounts).sort((a,b)=> b[1]-a[1]);
+
+  // Calculate auto min occurrence
+  const [calculatedMinOcc, setCalculatedMinOcc] = useState(2);
+  const [dataAnalysis, setDataAnalysis] = useState(analyzeData([]));
+
+  useEffect(() => {
+    if (entries.length > 0) {
+      const analysis = analyzeData(entries);
+      setDataAnalysis(analysis);
+
+      if (minOccMode === 'auto') {
+        const preferredCount = displayMode === 'overview' ? 30 : displayMode === 'balanced' ? 50 : 100;
+        const autoValue = calculateAutoMinOccurrence(entries, {
+          preferredWordCount: preferredCount,
+          spamSensitivity: 'medium'
+        });
+        setCalculatedMinOcc(autoValue);
+      }
+    }
+  }, [entries, minOccMode, displayMode]);
+
+  // Use the effective min occurrence
+  const effectiveMinOcc = minOccMode === 'auto' ? calculatedMinOcc : minOccurrence;
 
   // Load session data
   useEffect(() => {
@@ -127,6 +160,11 @@ export default function BigScreen() {
     if (params.get('download') === 'png') {
       const timer = setTimeout(async () => {
         if (!cloudContainerRef.current || !session) return;
+
+        // Enter export mode
+        setExportMode(true);
+        await new Promise(resolve => setTimeout(resolve, 150));
+
         try {
           const dataUrl = await htmlToImage.toPng(cloudContainerRef.current);
           const a = document.createElement('a');
@@ -136,6 +174,9 @@ export default function BigScreen() {
           a.click();
         } catch (e) {
           console.error('Auto export PNG failed', e);
+        } finally {
+          // Exit export mode
+          setExportMode(false);
         }
       }, 1200);
       return () => clearTimeout(timer);
@@ -225,6 +266,15 @@ export default function BigScreen() {
                 Share Link
               </button>
               <button
+                onClick={() => setShowSettings(true)}
+                className="btn-secondary text-sm md:text-base px-4 py-2 flex items-center gap-2"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
+                </svg>
+                Settings
+              </button>
+              <button
                 onClick={toggleFullscreen}
                 className="btn-primary flex items-center gap-2 text-sm md:text-base px-4 py-2"
               >
@@ -236,12 +286,25 @@ export default function BigScreen() {
               <button
                 onClick={async () => {
                   if (!cloudContainerRef.current || !session) return;
-                  const dataUrl = await htmlToImage.toPng(cloudContainerRef.current);
-                  const a = document.createElement('a');
-                  a.href = dataUrl;
-                  const slug = session.title || 'wordcloud';
-                  a.download = `${slug}.png`;
-                  a.click();
+
+                  // Enter export mode (show fullscreen title, hide stats)
+                  setExportMode(true);
+                  await new Promise(resolve => setTimeout(resolve, 150)); // Wait for render
+
+                  try {
+                    // Capture the image
+                    const dataUrl = await htmlToImage.toPng(cloudContainerRef.current);
+
+                    // Download
+                    const a = document.createElement('a');
+                    a.href = dataUrl;
+                    const slug = session.title || 'wordcloud';
+                    a.download = `${slug}.png`;
+                    a.click();
+                  } finally {
+                    // Exit export mode
+                    setExportMode(false);
+                  }
                 }}
                 className="btn-secondary text-sm md:text-base px-4 py-2"
               >
@@ -269,35 +332,45 @@ export default function BigScreen() {
       {/* Word Cloud Display */}
       <div className={`flex items-center justify-center ${isFullscreen ? 'h-screen' : 'h-[calc(100vh-200px)]'} p-4 md:p-8`}>
         <motion.div
+          ref={cloudContainerRef}
           initial={{ scale: 0.9, opacity: 0 }}
           animate={{ scale: 1, opacity: 1 }}
           transition={{ delay: 0.2 }}
-          className="w-full h-full max-w-7xl"
+          className="w-full h-full max-w-7xl relative"
         >
-          {isFullscreen && session && (
+          {(isFullscreen || exportMode) && session && (
             <motion.div
-              initial={{ y: -20, opacity: 0 }}
-              animate={{ y: 0, opacity: 1 }}
-              className="text-center mb-8"
+              initial={{ x: -20, opacity: 0 }}
+              animate={{ x: 0, opacity: 1 }}
+              className="absolute top-6 left-6 z-40 max-w-md"
             >
-              <h1 className="text-4xl md:text-5xl font-bold mb-2">{session.title}</h1>
+              <h1 className="text-2xl md:text-3xl font-bold text-gray-900">{session.title}</h1>
               {session.description && (
-                <p className="text-gray-300 text-xl">{session.description}</p>
+                <p className="text-gray-700 text-sm mt-1">{session.description}</p>
               )}
             </motion.div>
           )}
 
-          <div className="w-full h-full" ref={cloudContainerRef}>
-            <WordCloud entries={entries} rotationRangeDeg={0} maxWords={isFullscreen ? 70 : 50} />
+          <div className="w-full h-full">
+            <WordCloud
+              entries={entries}
+              rotationRangeDeg={0}
+              displayMode={displayMode}
+              showPhrases={showPhrases}
+              minOccurrence={effectiveMinOcc}
+              enableSpamFilter={true}
+              semanticGrouping={semanticGrouping}
+            />
           </div>
 
-          {/* Stats Footer */}
-          <motion.div
-            initial={{ y: 20, opacity: 0 }}
-            animate={{ y: 0, opacity: 1 }}
-            transition={{ delay: 0.4 }}
-            className="text-center mt-8"
-          >
+          {/* Stats Footer - Hide during export */}
+          {!exportMode && (
+            <motion.div
+              initial={{ y: 20, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              transition={{ delay: 0.4 }}
+              className="text-center mt-8"
+            >
             <div className="inline-flex items-center gap-4 md:gap-6 px-5 md:px-8 py-3 md:py-4 bg-gray-900/10 backdrop-blur-sm rounded-2xl">
               {/* Connection Status */}
               <div className="flex items-center gap-2">
@@ -337,6 +410,7 @@ export default function BigScreen() {
               </button>
             </div>
           </motion.div>
+          )}
         </motion.div>
       </div>
     </div>
@@ -398,6 +472,184 @@ export default function BigScreen() {
           )}
           <div className="flex justify-center">
             <QRCodeSVG value={buildShareUrl(session.id, session.title)} size={180} />
+          </div>
+        </div>
+      </Modal>
+    )}
+
+    {showSettings && (
+      <Modal title="Word Cloud Settings" onClose={() => setShowSettings(false)}>
+        <div className="space-y-6">
+          {/* Display Mode */}
+          <div>
+            <label className="block text-sm font-medium mb-2">Display Mode</label>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setDisplayMode('overview')}
+                className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  displayMode === 'overview'
+                    ? 'bg-purple-600 text-white'
+                    : 'bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600'
+                }`}
+              >
+                Overview
+                <div className="text-xs opacity-75">20-30 words</div>
+              </button>
+              <button
+                onClick={() => setDisplayMode('balanced')}
+                className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  displayMode === 'balanced'
+                    ? 'bg-purple-600 text-white'
+                    : 'bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600'
+                }`}
+              >
+                Balanced
+                <div className="text-xs opacity-75">40-50 words</div>
+              </button>
+              <button
+                onClick={() => setDisplayMode('detailed')}
+                className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  displayMode === 'detailed'
+                    ? 'bg-purple-600 text-white'
+                    : 'bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600'
+                }`}
+              >
+                Detailed
+                <div className="text-xs opacity-75">80-100 words</div>
+              </button>
+            </div>
+          </div>
+
+          {/* Minimum Occurrence */}
+          <div>
+            <label className="block text-sm font-medium mb-2">
+              Minimum Occurrences
+            </label>
+
+            {/* Mode Toggle */}
+            <div className="flex gap-2 mb-3">
+              <button
+                onClick={() => setMinOccMode('auto')}
+                className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  minOccMode === 'auto'
+                    ? 'bg-purple-600 text-white'
+                    : 'bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600'
+                }`}
+              >
+                Auto
+              </button>
+              <button
+                onClick={() => setMinOccMode('manual')}
+                className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  minOccMode === 'manual'
+                    ? 'bg-purple-600 text-white'
+                    : 'bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600'
+                }`}
+              >
+                Manual
+              </button>
+            </div>
+
+            {/* Conditional Display */}
+            {minOccMode === 'auto' ? (
+              <div className="bg-purple-50 dark:bg-purple-900/20 p-3 rounded-lg space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium text-purple-900 dark:text-purple-100">
+                    Current threshold:
+                  </span>
+                  <span className="text-lg font-bold text-purple-600 dark:text-purple-400">
+                    {calculatedMinOcc}
+                  </span>
+                </div>
+                <div className="text-xs text-purple-800 dark:text-purple-200 space-y-1">
+                  <div className="flex justify-between">
+                    <span>Unique words:</span>
+                    <span className="font-medium">{dataAnalysis.uniqueWords}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Diversity:</span>
+                    <span className="font-medium">{(dataAnalysis.diversity * 100).toFixed(0)}%</span>
+                  </div>
+                  {dataAnalysis.spamRatio > 0.15 && (
+                    <div className="flex justify-between text-orange-600 dark:text-orange-400">
+                      <span>Spam detected:</span>
+                      <span className="font-medium">{(dataAnalysis.spamRatio * 100).toFixed(0)}%</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div>
+                <div className="mb-2 text-sm text-gray-600 dark:text-gray-400">
+                  Current: <span className="text-purple-600 dark:text-purple-400 font-medium">{minOccurrence}</span>
+                </div>
+                <input
+                  type="range"
+                  min="1"
+                  max="10"
+                  step="1"
+                  value={minOccurrence}
+                  onChange={(e) => setMinOccurrence(Number(e.target.value))}
+                  className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer dark:bg-gray-700"
+                />
+                <div className="flex justify-between text-xs text-gray-500 mt-1">
+                  <span>1 (show all)</span>
+                  <span>10 (only frequent)</span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Toggles */}
+          <div className="space-y-3">
+            <label className="flex items-center justify-between cursor-pointer">
+              <div>
+                <div className="font-medium">Semantic Grouping</div>
+                <div className="text-sm text-gray-500">Group similar phrases together (e.g., "like chicken" + "buy chicken" → "chicken")</div>
+              </div>
+              <div className="relative inline-block w-12 h-6 transition duration-200 ease-linear">
+                <input
+                  type="checkbox"
+                  checked={semanticGrouping}
+                  onChange={(e) => setSemanticGrouping(e.target.checked)}
+                  className="opacity-0 w-0 h-0 peer"
+                />
+                <span className="absolute cursor-pointer inset-0 bg-gray-300 dark:bg-gray-700 rounded-full peer-checked:bg-purple-600 transition-colors">
+                  <span className={`absolute left-1 top-1 w-4 h-4 bg-white rounded-full transition-transform ${semanticGrouping ? 'translate-x-6' : ''}`}></span>
+                </span>
+              </div>
+            </label>
+
+            <label className="flex items-center justify-between cursor-pointer">
+              <div>
+                <div className="font-medium">Show Phrases</div>
+                <div className="text-sm text-gray-500">Display full phrases like "i like chicken" instead of just "chicken"</div>
+              </div>
+              <div className="relative inline-block w-12 h-6 transition duration-200 ease-linear">
+                <input
+                  type="checkbox"
+                  checked={showPhrases}
+                  onChange={(e) => setShowPhrases(e.target.checked)}
+                  className="opacity-0 w-0 h-0 peer"
+                />
+                <span className="absolute cursor-pointer inset-0 bg-gray-300 dark:bg-gray-700 rounded-full peer-checked:bg-purple-600 transition-colors">
+                  <span className={`absolute left-1 top-1 w-4 h-4 bg-white rounded-full transition-transform ${showPhrases ? 'translate-x-6' : ''}`}></span>
+                </span>
+              </div>
+            </label>
+          </div>
+
+          {/* Info */}
+          <div className="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-lg">
+            <div className="flex items-start gap-2">
+              <svg className="w-5 h-5 text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <div className="text-sm text-blue-800 dark:text-blue-200">
+                <p className="font-medium mb-1">Powered by Advanced NLP</p>
+                <p className="text-xs opacity-90">Supports Chinese (中文), English, and Malay with intelligent phrase detection and semantic grouping.</p>
+              </div>
+            </div>
           </div>
         </div>
       </Modal>
