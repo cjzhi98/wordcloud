@@ -1,4 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
+// d3-cloud handles pixel-perfect collision to prevent overlap
+import cloud from 'd3-cloud';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { Entry } from '../types';
 import { processWordCloudData, type ProcessorOptions } from '../lib/wordCloudProcessor';
@@ -25,13 +27,7 @@ interface PositionedGroup extends SemanticGroup {
   rotation: number;
 }
 
-interface BoundingBox {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  pad?: number;
-}
+// (BoundingBox removed; d3-cloud provides collision handling)
 
 // Tier-based font size ranges (tighter than linear scaling)
 const TIER_FONT_RANGES: Record<Tier, { min: number; max: number; weight: number; opacity: number }> = {
@@ -121,20 +117,16 @@ export default function WordCloud({
     return range.min + ratio * (range.max - range.min);
   };
 
-  // Check if two boxes overlap
-  const checkCollision = (box1: BoundingBox, box2: BoundingBox, padding = 10): boolean => {
-    return !(
-      box1.x + box1.width + padding < box2.x ||
-      box1.x > box2.x + box2.width + padding ||
-      box1.y + box1.height + padding < box2.y ||
-      box1.y > box2.y + box2.height + padding
-    );
-  };
-
-  // Calculate positions with collision detection
+  // Calculate positions with d3-cloud (guaranteed no overlap)
+  const layoutRef = useRef<any | null>(null);
   useEffect(() => {
     const cw = containerWidth ?? measuredSize.w;
     const ch = containerHeight ?? measuredSize.h;
+
+    if (layoutRef.current) {
+      try { layoutRef.current.stop(); } catch {}
+      layoutRef.current = null;
+    }
 
     if (groups.length === 0 || cw === 0 || ch === 0) {
       setWords([]);
@@ -142,137 +134,60 @@ export default function WordCloud({
     }
 
     const maxCount = Math.max(...groups.map(g => g.totalCount));
-    const centerX = cw / 2;
-    const centerY = ch / 2;
-    const positions: PositionedGroup[] = [];
-    const boundingBoxes: BoundingBox[] = [];
-    const shortest = Math.min(cw, ch);
-    const centerClearRadius = shortest * 0.10;
 
-    groups.forEach((group) => {
-      // Calculate font size based on tier
-      const fontSize = getFontSize(group, maxCount);
+    // Prepare words with desired font sizes; d3-cloud sorts by size desc internally
+    const d3Words = groups.map((g) => ({
+      text: g.displayText,
+      size: getFontSize(g, maxCount),
+      __group: g,
+    }));
 
-      // Estimate text width
-      const avgCharWidth = fontSize * 0.6;
-      const textWidth = group.displayText.length * avgCharWidth;
-      const textHeight = fontSize * 1.2;
+    const rotateFn = () => {
+      if (!rotationRangeDeg || rotationRangeDeg <= 0) return 0;
+      // Favor clarity: 0 or 90 when rotation allowed
+      return Math.random() < 0.5 ? 0 : 90;
+    };
 
-      // Try to place the word
-      let placed = false;
-      let attempts = 0;
-      const maxAttempts = 200;
+    const paddingFn = (d: any) => Math.max(8, Math.round((d.size as number) * 0.18));
+    const fontWeightFn = (d: any) => {
+      const g: SemanticGroup = d.__group;
+      const range = TIER_FONT_RANGES[g.tier];
+      return range.weight;
+    };
 
-      // Tier S gets priority placement (center area)
-      const isTierS = group.tier === 'S';
-      const isTierA = group.tier === 'A';
-
-      while (!placed && attempts < maxAttempts) {
-        let x, y;
-
-        if (attempts === 0 && positions.length === 0) {
-          // First word in center
-          x = centerX;
-          y = centerY;
-        } else if (isTierS && attempts < 50) {
-          // Tier S: try center area first
-          const angle = attempts * 0.8;
-          const radius = Math.sqrt(attempts + 1) * Math.max(30, shortest * 0.04);
-          x = centerX + radius * Math.cos(angle);
-          y = centerY + radius * Math.sin(angle);
-        } else if (isTierA && attempts < 80) {
-          // Tier A: middle ring
-          const angle = attempts * 0.6;
-          const radius = centerClearRadius + Math.sqrt(attempts + 1) * Math.max(25, shortest * 0.035);
-          x = centerX + radius * Math.cos(angle);
-          y = centerY + radius * Math.sin(angle);
-        } else {
-          // Tier B/C: outer areas
-          const angle = attempts * 0.5;
-          const baseStep = Math.max(20, shortest * 0.03) + fontSize * 0.15;
-          const radius = Math.sqrt(attempts + 1) * baseStep;
-          x = centerX + radius * Math.cos(angle);
-          y = centerY + radius * Math.sin(angle);
-        }
-
-        // Create bounding box
-        const pad = Math.max(8, Math.floor(fontSize * 0.2));
-        const newBox: BoundingBox = {
-          x: x - textWidth / 2,
-          y: y - textHeight / 2,
-          width: textWidth,
-          height: textHeight,
-          pad,
-        };
-
-        // Check if it fits in container
-        if (
-          newBox.x >= 0 &&
-          newBox.x + newBox.width <= cw &&
-          newBox.y >= 0 &&
-          newBox.y + newBox.height <= ch &&
-          (positions.length === 0 || Math.hypot(x - centerX, y - centerY) > centerClearRadius * 0.5)
-        ) {
-          // Check collision with other words
-          let hasCollision = false;
-          for (const existingBox of boundingBoxes) {
-            const p1 = newBox.pad || 8;
-            const p2 = existingBox.pad || 8;
-            const inflatedNew: BoundingBox = {
-              x: newBox.x - p1 / 2,
-              y: newBox.y - p1 / 2,
-              width: newBox.width + p1,
-              height: newBox.height + p1,
-            };
-            const inflatedExisting: BoundingBox = {
-              x: existingBox.x - p2 / 2,
-              y: existingBox.y - p2 / 2,
-              width: existingBox.width + p2,
-              height: existingBox.height + p2,
-            };
-            if (checkCollision(inflatedNew, inflatedExisting)) {
-              hasCollision = true;
-              break;
-            }
-          }
-
-          if (!hasCollision) {
-            // Place the word
-            const rotation = rotationRangeDeg > 0 ? (Math.random() - 0.5) * rotationRangeDeg : 0;
-            positions.push({
-              ...group,
-              x,
-              y,
-              fontSize,
-              rotation,
-            });
-            boundingBoxes.push(newBox);
-            placed = true;
-          }
-        }
-
-        attempts++;
-      }
-
-      // Fallback placement if couldn't place after max attempts
-      if (!placed) {
-        const angle = Math.random() * Math.PI * 2;
-        const radius = Math.random() * Math.min(cw, ch) * 0.35;
-        const x = centerX + radius * Math.cos(angle);
-        const y = centerY + radius * Math.sin(angle);
-        const rotation = rotationRangeDeg > 0 ? (Math.random() - 0.5) * rotationRangeDeg : 0;
-
-        positions.push({
-          ...group,
-          x,
-          y,
-          fontSize,
-          rotation,
+    const layout = cloud()
+      .size([cw, ch])
+      .words(d3Words as any)
+      .padding(paddingFn as any)
+      .rotate(rotateFn as any)
+      .font(() => 'sans-serif')
+      .fontWeight(fontWeightFn as any)
+      .fontSize((d: any) => d.size as number)
+      .spiral('archimedean')
+      .on('end', (placed: any[]) => {
+        const placedWords: PositionedGroup[] = placed.map((w: any) => {
+          const g: SemanticGroup = w.__group;
+          return {
+            ...g,
+            x: (w.x || 0) + cw / 2,
+            y: (w.y || 0) + ch / 2,
+            fontSize: w.size,
+            rotation: w.rotate || 0,
+            colors: g.colors,
+            tier: g.tier,
+          } as PositionedGroup;
         });
-      }
-    });
+        setWords(placedWords);
+        layoutRef.current = null;
+      });
 
-    setWords(positions);
+    layoutRef.current = layout;
+    layout.start();
+
+    return () => {
+      try { layout.stop(); } catch {}
+      layoutRef.current = null;
+    };
   }, [groups, containerWidth, containerHeight, measuredSize.w, measuredSize.h, rotationRangeDeg]);
 
   const cw = containerWidth ?? measuredSize.w;
