@@ -27,116 +27,7 @@ export interface ProcessedToken {
 	semanticWeight: number; // Importance score 0-1
 }
 
-// Chinese filler words (already defined but keeping for completeness)
-const CHINESE_FILLERS = [
-	"我",
-	"你",
-	"他",
-	"她",
-	"它",
-	"们",
-	"的",
-	"地",
-	"得",
-	"很",
-	"非常",
-	"特别",
-	"挺",
-	"好",
-	"真",
-	"喜欢",
-	"爱",
-	"想",
-	"要",
-	"觉得",
-	"是",
-	"在",
-	"有",
-	"了",
-	"也",
-	"都",
-	"还",
-	"就",
-	"这",
-	"那",
-	"哪",
-];
-
-// English filler words
-const ENGLISH_FILLERS = [
-	"i",
-	"me",
-	"my",
-	"you",
-	"your",
-	"he",
-	"she",
-	"it",
-	"we",
-	"our",
-	"they",
-	"the",
-	"a",
-	"an",
-	"is",
-	"are",
-	"was",
-	"were",
-	"be",
-	"have",
-	"has",
-	"had",
-	"do",
-	"does",
-	"did",
-	"will",
-	"would",
-	"and",
-	"or",
-	"but",
-	"in",
-	"on",
-	"at",
-	"to",
-	"for",
-	"of",
-	"with",
-	"like",
-	"love",
-	"want",
-	"very",
-	"so",
-	"this",
-	"that",
-];
-
-// Malay filler words
-const MALAY_FILLERS = [
-	"saya",
-	"aku",
-	"kamu",
-	"dia",
-	"mereka",
-	"yang",
-	"adalah",
-	"ialah",
-	"suka",
-	"cinta",
-	"mahu",
-	"nak",
-	"sangat",
-	"sekali",
-	"amat",
-	"di",
-	"ke",
-	"dari",
-	"untuk",
-	"dan",
-	"atau",
-	"tetapi",
-	"ini",
-	"itu",
-];
+// REMOVED: Filler word arrays - no longer used since we keep all words
 
 // Jieba instance (lazy-loaded)
 let jiebaInstance: any = null;
@@ -195,6 +86,7 @@ export function detectLanguage(text: string): Language {
 
 /**
  * Process Chinese text using jieba-wasm
+ * UPDATED: Keeps all words including filler words
  */
 async function processChinese(text: string): Promise<ProcessedToken> {
 	await initJieba();
@@ -215,10 +107,8 @@ async function processChinese(text: string): Promise<ProcessedToken> {
 		// Segment using jieba (precise mode)
 		const segments: string[] = jiebaInstance.cut(text, false);
 
-		// Filter out filler words
-		const filtered = segments.filter(
-			(seg: string) => !CHINESE_FILLERS.includes(seg) && seg.trim().length > 0
-		);
+		// UPDATED: Keep ALL segments, don't filter filler words
+		const filtered = segments.filter((seg: string) => seg.trim().length > 0);
 
 		if (filtered.length === 0) {
 			return {
@@ -227,15 +117,15 @@ async function processChinese(text: string): Promise<ProcessedToken> {
 				keyPhrase: text,
 				type: "word",
 				language: "zh",
-				semanticWeight: 0.5, // Low weight for filler-only text
+				semanticWeight: 1.0,
 			};
 		}
 
-		// Extract key phrase (longest meaningful segment or last noun)
+		// Extract key phrase (longest segment)
 		const sortedByLength = [...filtered].sort((a, b) => b.length - a.length);
 		const keyPhrase = sortedByLength[0];
 
-		// Normalized form: join filtered segments
+		// Normalized form: join all segments
 		const normalized = filtered.join(""); // Or with space: filtered.join(' ')
 
 		return {
@@ -261,34 +151,100 @@ async function processChinese(text: string): Promise<ProcessedToken> {
 
 /**
  * Process English text using compromise
+ * UPDATED: Keeps all words including filler words
  */
 function processEnglish(text: string): ProcessedToken {
 	try {
 		const doc = nlp(text);
 
 		// Extract nouns and verbs
-		const nouns = doc.nouns().text();
+		const nounDoc = doc.nouns();
+		const nounEntries = nounDoc.json();
 		const verbPhrases = doc.match("#Verb #Noun").text();
 		const nounPhrases = doc.match("#Adjective? #Noun+").text();
 
-		// Determine key phrase (main noun or noun phrase)
-		let keyPhrase = nouns || text.split(/\s+/).pop() || text;
+		const normalized = text.toLowerCase().trim();
+		const words = normalized.length > 0 ? normalized.split(/\s+/) : [];
 
-		// Get normalized text (remove fillers)
-		const words = text.toLowerCase().split(/\s+/);
-		const filtered = words.filter((w) => !ENGLISH_FILLERS.includes(w));
-		const normalized = filtered.join(" ") || text;
+		const pronouns = new Set([
+			"i",
+			"me",
+			"you",
+			"we",
+			"us",
+			"they",
+			"them",
+			"he",
+			"him",
+			"she",
+			"her",
+			"it",
+			"ya",
+			"u",
+		]);
+
+		const questionStarters = new Set([
+			"what",
+			"whats",
+			"why",
+			"how",
+			"who",
+			"whos",
+			"where",
+			"wheres",
+			"when",
+			"whens",
+		]);
+
+		// Build list of noun candidates, preserving order and removing pronouns
+		const nounCandidates: string[] = [];
+		nounEntries.forEach((entry: any) => {
+			entry.terms?.forEach((term: any) => {
+				const termText = term?.text?.toLowerCase?.();
+				const tags: string[] = term?.tags ?? [];
+				if (!termText) return;
+				if (tags.includes("Pronoun")) return;
+				if (
+					tags.includes("Noun") ||
+					tags.includes("Singular") ||
+					tags.includes("Plural") ||
+					tags.includes("NounPhrase")
+				) {
+					nounCandidates.push(termText);
+				}
+			});
+		});
+
+		let keyPhrase =
+			nounCandidates.length > 0
+				? nounCandidates[nounCandidates.length - 1]
+				: words[words.length - 1] || normalized;
 
 		// Determine if it's a phrase
 		const isPhrase =
 			verbPhrases.length > 0 ||
 			nounPhrases.length > 0 ||
-			filtered.length > 1;
+			words.length > 1;
 
-		// Extract first noun as key phrase if available
-		if (nouns) {
-			const nounWords = nouns.split(/\s+/);
-			keyPhrase = nounWords[nounWords.length - 1]; // Last noun is usually key
+		// Question-style sentences: keep the whole phrase
+		if (words.length > 0) {
+			const firstWord = words[0];
+			const starter = firstWord.replace(/[^a-z]/g, "");
+			if (questionStarters.has(starter) || normalized.endsWith("?")) {
+				keyPhrase = normalized;
+			}
+		}
+
+		// Avoid pronoun-only key phrases
+		if (pronouns.has(keyPhrase)) {
+			const fallback = [...nounCandidates]
+				.reverse()
+				.find((candidate) => !pronouns.has(candidate));
+			if (fallback) {
+				keyPhrase = fallback;
+			} else if (words.length > 1) {
+				keyPhrase = normalized;
+			}
 		}
 
 		return {
@@ -315,26 +271,17 @@ function processEnglish(text: string): ProcessedToken {
 
 /**
  * Process Malay text (using custom rules + compromise)
+ * UPDATED: Keeps all words including filler words
  */
 function processMalay(text: string): ProcessedToken {
 	try {
 		const words = text.toLowerCase().split(/\s+/);
-		const filtered = words.filter((w) => !MALAY_FILLERS.includes(w));
 
-		if (filtered.length === 0) {
-			return {
-				original: text,
-				normalized: text,
-				keyPhrase: text,
-				type: "word",
-				language: "ms",
-				semanticWeight: 0.5,
-			};
-		}
+		// UPDATED: Keep ALL words, don't filter fillers
+		const normalized = text.toLowerCase();
 
 		// Key phrase is typically the last word (main noun in Malay)
-		const keyPhrase = filtered[filtered.length - 1];
-		const normalized = filtered.join(" ");
+		const keyPhrase = words[words.length - 1];
 
 		// Detect common Malay noun compounds
 		const isCompound =
@@ -344,7 +291,7 @@ function processMalay(text: string): ProcessedToken {
 			original: text,
 			normalized,
 			keyPhrase: isCompound ? normalized : keyPhrase,
-			type: filtered.length > 1 || isCompound ? "phrase" : "word",
+			type: words.length > 1 || isCompound ? "phrase" : "word",
 			language: "ms",
 			semanticWeight: 1.0,
 		};

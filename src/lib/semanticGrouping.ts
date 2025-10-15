@@ -25,6 +25,10 @@ export interface SemanticGroup {
 	colors: string[]; // Colors from entries
 }
 
+export interface GroupingOptions {
+	showPhrases?: boolean;
+}
+
 /**
  * Count occurrences of each entry
  */
@@ -113,7 +117,10 @@ function clusterByKeyPhrase(
  * Choose the best display text for a group
  * Prioritizes: most frequent, then most complete, then shortest
  */
-function chooseBestDisplayText(group: SemanticGroup): string {
+function chooseBestDisplayText(
+	group: SemanticGroup,
+	options: GroupingOptions = {}
+): string {
 	if (group.variants.length === 0) return group.keyPhrase;
 
 	// Sort by count (desc), then by length (prefer complete phrases)
@@ -128,13 +135,55 @@ function chooseBestDisplayText(group: SemanticGroup): string {
 		return group.keyPhrase;
 	}
 
+	const multiWordVariants = sorted.filter((v) => v.text.trim().includes(" "));
+	const singleWordVariants = sorted.filter(
+		(v) => !v.text.trim().includes(" ")
+	);
+	const bestSingleWord = singleWordVariants[0];
+	const asciiWord = (text: string) => /^[a-zA-Z\s'’-]+$/.test(text);
+	const hasChinese = group.languages.has("zh");
+	const romanizedCandidate = multiWordVariants.find(
+		(v) => asciiWord(v.text) && v.text.length <= 40
+	);
+
+	if (options.showPhrases) {
+		// Chinese phrases: keep the richest variant (segmentation already handles overlap)
+		if (hasChinese) {
+			return topVariant.text;
+		}
+
+		const canonicalMatch =
+			bestSingleWord &&
+			bestSingleWord.text.toLowerCase() === group.keyPhrase.toLowerCase();
+		if (canonicalMatch) {
+			return group.keyPhrase;
+		}
+
+		if (romanizedCandidate) {
+			// Prefer romanized multi-word phrases when there's no strong single-word competitor
+			if (!bestSingleWord || romanizedCandidate.count > bestSingleWord.count) {
+				return romanizedCandidate.text;
+			}
+		}
+
+		// If the top variant itself is a multi-word phrase, respect it
+		if (topVariant.text.includes(" ")) {
+			return topVariant.text;
+		}
+	}
+
 	// If top variant is significantly more frequent, use it
 	if (sorted.length > 1 && topVariant.count > sorted[1].count * 2) {
 		return topVariant.text;
 	}
 
+	// Favor the most common single-word variant for clarity
+	if (bestSingleWord) {
+		return bestSingleWord.text;
+	}
+
 	// Use keyPhrase for clarity
-	return group.keyPhrase;
+	return topVariant.text || group.keyPhrase;
 }
 
 /**
@@ -194,7 +243,8 @@ function assignTiers(groups: SemanticGroup[]): SemanticGroup[] {
  */
 export function groupSemantically(
 	tokens: ProcessedToken[],
-	entries: Entry[]
+	entries: Entry[],
+	options: GroupingOptions = {}
 ): SemanticGroup[] {
 	if (tokens.length === 0) return [];
 
@@ -209,7 +259,7 @@ export function groupSemantically(
 
 	// Step 4: Choose best display text for each group
 	groups.forEach((group) => {
-		group.displayText = chooseBestDisplayText(group);
+		group.displayText = chooseBestDisplayText(group, options);
 		group.semanticScore = calculateSemanticScore(group);
 	});
 
@@ -228,7 +278,8 @@ export function groupSemantically(
  */
 export function createIndividualGroups(
 	tokens: ProcessedToken[],
-	entries: Entry[]
+	entries: Entry[],
+	options: GroupingOptions = {}
 ): SemanticGroup[] {
 	const countMap = buildCountMap(entries);
 
@@ -274,6 +325,12 @@ export function createIndividualGroups(
 
 	// Convert to array and assign tiers
 	const groupsArray = Array.from(groupsMap.values());
+
+	// Respect display preferences for consistency with semantic grouping
+	groupsArray.forEach((group) => {
+		group.displayText = chooseBestDisplayText(group, options);
+	});
+
 	return assignTiers(groupsArray);
 }
 

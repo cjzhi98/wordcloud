@@ -30,148 +30,11 @@ export const DEFAULT_OPTIONS: ProcessorOptions = {
 	semanticGrouping: true,
 };
 
-/**
- * Whitelist of legitimate short words (2-3 characters)
- * Words NOT in this list are considered spam if they're short Latin text
- */
-const LEGITIMATE_SHORT_WORDS = new Set([
-	// English common words
-	"am",
-	"is",
-	"are",
-	"was",
-	"be",
-	"do",
-	"can",
-	"hi",
-	"hey",
-	"bye",
-	"yes",
-	"no",
-	"ok",
-	"omg",
-	"lol",
-	"you",
-	"me",
-	"we",
-	"us",
-	"my",
-	"our",
-	"the",
-	"and",
-	"but",
-	"for",
-	"not",
-	"all",
-	"any",
-	"get",
-	"got",
-	"had",
-	"has",
-	"how",
-	"why",
-	"who",
-	"wow",
-	"yay",
-	"go",
-	"let",
-	"new",
-	"old",
-	"big",
-	"see",
-	"say",
-	"too",
-	"way",
-	"eat",
-	"buy",
-	"up",
-	"out",
-	"now",
-	"day",
-	"use",
-	"her",
-	"his",
-	"she",
-	"him",
-	"its",
-	"may",
-	"try",
-	"ask",
-	"own",
-	"put",
-	"off",
-	"run",
-	"top",
-	"hot",
-	"cut",
-	"yet",
-	"lot",
-	"set",
-	"far",
-	"act",
-	"end",
-	"age",
-	"bad",
-	"add",
-	"arm",
-	"art",
-	"bag",
-	"bed",
-	"boy",
-	"box",
-	"bus",
-	"car",
-	"cat",
-	"cup",
-	"dog",
-	"eye",
-	"fun",
-	"guy",
-	"hit",
-	"job",
-	"kid",
-	"law",
-	"leg",
-	"lie",
-	"man",
-	"map",
-	"mom",
-	"dad",
-	"pay",
-	"red",
-	"sea",
-	"sit",
-	"six",
-	"son",
-	"sun",
-	"ten",
-	"war",
-	"win",
-	"air",
-	"oil",
-	// Malay common words
-	"saya",
-	"apa",
-	"ada",
-	"tak",
-	"nak",
-	"ini",
-	"itu",
-	"dan",
-	"ya",
-	"dia",
-	"tau",
-	// Food/common nouns
-	"tea",
-	"pie",
-	// Time/numbers
-	"one",
-	"two",
-]);
+// REMOVED: LEGITIMATE_SHORT_WORDS whitelist - no longer used since we removed aggressive filtering
 
 /**
  * Detect spam/gibberish text
- * Enhanced with whitelist approach for maximum spam filtering
+ * UPDATED: Minimal spam detection - only catch extreme cases
  */
 export function isSpam(text: string): boolean {
 	if (!text || text.trim().length === 0) return true;
@@ -183,139 +46,48 @@ export function isSpam(text: string): boolean {
 		return false;
 	}
 
-	// WHITELIST APPROACH: Short Latin words (≤3 chars) must be in whitelist
-	if (cleaned.length <= 3 && /^[a-z]+$/i.test(cleaned)) {
-		if (!LEGITIMATE_SHORT_WORDS.has(cleaned)) {
-			return true; // Not in whitelist = spam
-		}
-	}
+	// REMOVED: Aggressive whitelist check for short words
+	// This was filtering out valid short words like "zha", "ji", "da", etc.
 
-	// Repeated characters: "aaaa", "ewqewqewq"
-	if (/(.)\1{3,}/.test(cleaned)) {
+	// Repeated characters: "aaaa", "eeee" (4+ same character)
+	if (/(.)\1{4,}/.test(cleaned)) {
 		return true;
 	}
 
-	// Alternating 2 character patterns: "yaya", "asas", "dodo"
-	if (/^([a-z]{2})\1+$/i.test(cleaned)) {
+	// Alternating 2 character patterns: "yaya", "asas", "dodo" (repeated 3+ times)
+	if (/^([a-z]{2})\1{3,}$/i.test(cleaned)) {
 		return true;
 	}
 
-	// Alternating 2-3 character patterns (keyboard mashing): "asdasd", "qweqwe"
-	if (/^([a-z]{2,3})\1{2,}$/i.test(cleaned)) {
+	// Only catch obvious keyboard mashing patterns (repeated 4+ times)
+	if (/^([a-z]{2,3})\1{4,}$/i.test(cleaned)) {
 		return true;
 	}
 
-	// Keyboard row sequences: "asd", "sdf", "dfg", "jkl", "qwe", "ewq", "zxc"
-	const keyboardSequences = [
-		"asd",
-		"sdf",
-		"dfg",
-		"fgh",
-		"ghj",
-		"hjk",
-		"jkl",
-		"qwe",
-		"wer",
-		"ert",
-		"rty",
-		"tyu",
-		"yui",
-		"uio",
-		"iop",
-		"zxc",
-		"xcv",
-		"cvb",
-		"vbn",
-		"bnm",
-		// Reverse sequences
-		"dsa",
-		"fds",
-		"gfd",
-		"hgf",
-		"jhg",
-		"kjh",
-		"lkj",
-		"ewq",
-		"rew",
-		"tre",
-		"ytr",
-		"uyt",
-		"iuy",
-		"oiu",
-		"poi",
-		"cxz",
-		"vcx",
-		"bvc",
-		"nbv",
-		"mnb",
-	];
-
-	if (keyboardSequences.some((seq) => cleaned.includes(seq))) {
-		return true;
-	}
-
-	// Mixed alphanumeric gibberish: "ewq3eqwqw", "abc123abc"
-	if (/[0-9]/.test(cleaned) && cleaned.length > 3) {
-		// Has numbers - check if it's gibberish pattern
-		if (/^[a-z0-9]{4,}$/i.test(cleaned) && !/^[0-9]+$/.test(cleaned)) {
-			// Mixed letters and numbers, likely spam unless it's a common pattern
-			const legitPatterns = /covid|2023|2024|2025|iphone|macbook/i;
-			if (!legitPatterns.test(cleaned)) {
-				return true;
-			}
-		}
-	}
-
-	// Latin text with no vowels (likely gibberish) - more aggressive
-	if (/^[a-z]{3,}$/i.test(cleaned) && !/[aeiou]/i.test(cleaned)) {
-		// Exceptions: common acronyms, abbreviations
-		const exceptions = [
-			"www",
-			"http",
-			"ftp",
-			"sql",
-			"xml",
-			"html",
-			"css",
-			"js",
-			"php",
-			"pdf",
-			"gym",
-		];
-		if (!exceptions.includes(cleaned)) {
-			return true;
-		}
-	}
-
-	// Common gibberish patterns (expanded list)
-	const gibberishPatterns = [
-		"qweqwe",
-		"asdasd",
-		"zxczxc",
-		"ewqewq",
-		"dsadsa",
-		"dsdas",
-		"cxzcxz",
+	// Only block full keyboard row sequences, not partial ones
+	const obviousKeyboardMashing = [
+		"qwertyuiop",
+		"asdfghjkl",
+		"zxcvbnm",
 		"qwerty",
 		"asdfgh",
 		"zxcvbn",
-		"asdqwe",
-		"qweasd",
-		"isdas",
-		"yoyuo",
+		"poiuytrewq",
+		"lkjhgfdsa",
+		"mnbvcxz",
 	];
 
-	if (gibberishPatterns.some((pattern) => cleaned.includes(pattern))) {
+	if (obviousKeyboardMashing.some((seq) => cleaned.includes(seq))) {
 		return true;
 	}
 
-	// Excessive consecutive consonants (> 5)
-	if (/[bcdfghjklmnpqrstvwxyz]{6,}/i.test(cleaned)) {
-		return true;
-	}
+	// REMOVED: Mixed alphanumeric gibberish check (too aggressive)
+	// REMOVED: No vowels check (too aggressive, blocks valid words)
+	// REMOVED: Common gibberish patterns check (too aggressive)
+	// REMOVED: Excessive consonants check (too aggressive)
 
-	// Very long words without spaces (likely keyboard mashing)
-	if (cleaned.length > 20 && !/[\s\u4e00-\u9fff]/.test(cleaned)) {
+	// Only block extremely long single words (likely actual keyboard mashing)
+	if (cleaned.length > 30 && !/[\s\u4e00-\u9fff]/.test(cleaned)) {
 		return true;
 	}
 
@@ -380,10 +152,14 @@ export async function processWordCloudData(
 	let groups: SemanticGroup[];
 	if (opts.semanticGrouping) {
 		console.log("[Processor] Applying semantic grouping...");
-		groups = groupSemantically(tokens, entries);
+		groups = groupSemantically(tokens, entries, {
+			showPhrases: opts.showPhrases,
+		});
 	} else {
 		console.log("[Processor] Creating individual groups...");
-		groups = createIndividualGroups(tokens, entries);
+		groups = createIndividualGroups(tokens, entries, {
+			showPhrases: opts.showPhrases,
+		});
 	}
 
 	console.log(`[Processor] Created ${groups.length} groups`);

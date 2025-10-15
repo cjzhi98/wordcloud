@@ -357,20 +357,26 @@ export default function Dashboard() {
                   </div>
 
                   <div className="space-y-2">
-                    <div className="flex gap-2">
+                    <div className="grid grid-cols-2 gap-2">
                       <Link
                         to={`/join/${session.id}`}
                         className="btn-primary flex-1 text-center text-sm py-2"
                       >
                         Re-enter Session
                       </Link>
-                      <button
-                        onClick={() => leaveJoinedSession(session.id)}
-                        className="btn-secondary flex-1 text-sm py-2"
+                      <Link
+                        to={`/screen/${session.id}`}
+                        className="btn-secondary flex-1 text-center text-sm py-2"
                       >
-                        Leave
-                      </button>
+                        View Big Screen
+                      </Link>
                     </div>
+                    <button
+                      onClick={() => leaveJoinedSession(session.id)}
+                      className="btn-secondary w-full text-sm py-2"
+                    >
+                      Leave
+                    </button>
                   </div>
                 </motion.div>
               ))}

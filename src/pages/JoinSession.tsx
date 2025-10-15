@@ -4,7 +4,6 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { supabase } from '../lib/supabase';
 import { normalizeText, generateCuteNickname } from '../lib/textNormalization';
 import ColorPicker from '../components/ColorPicker';
-import WordCloud from '../components/WordCloud';
 import type { Session, Entry } from '../types';
 
 export default function JoinSession() {
@@ -25,8 +24,6 @@ export default function JoinSession() {
     // View mode: 'setup' | 'contributing'
     const [viewMode, setViewMode] = useState<'setup' | 'contributing'>('setup');
 
-    // Connection status indicator (we use polling only)
-    const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected'>('disconnected');
     const lastTimestampRef = useRef<string | null>(null);
 
     // Restore participant state from sessionStorage on mount
@@ -90,29 +87,67 @@ export default function JoinSession() {
 
         // Always-on polling (no Realtime)
         let isMounted = true;
+        let pollCount = 0;
+
         const fetchNewEntries = async () => {
             try {
-                let query = supabase
-                    .from('entries')
-                    .select('*')
-                    .eq('session_id', sessionId);
+                pollCount++;
+                const isFullRefresh = pollCount % 5 === 0; // Full refresh every 5 seconds
 
-                if (lastTimestampRef.current) {
-                    query = query.gt('created_at', lastTimestampRef.current);
+                if (isFullRefresh) {
+                    // Full refresh: Fetch all entries to detect deletions
+                    const { data, error } = await supabase
+                        .from('entries')
+                        .select('*')
+                        .eq('session_id', sessionId)
+                        .order('created_at', { ascending: true });
+
+                    if (error) throw error;
+                    if (!isMounted) return;
+
+                    if (data) {
+                        // Smart diff: only update state if entry IDs actually changed
+                        setEntries((prev) => {
+                            const prevIds = new Set(prev.map(e => e.id));
+                            const newIds = new Set(data.map(e => e.id));
+
+                            // Check if sets are identical (no additions or deletions)
+                            if (prevIds.size === newIds.size &&
+                                [...prevIds].every(id => newIds.has(id))) {
+                                return prev; // No change, keep same reference to prevent re-render
+                            }
+
+                            // IDs changed (addition or deletion), update state
+                            if (data.length > 0) {
+                                lastTimestampRef.current = data[data.length - 1].created_at;
+                            }
+                            return data;
+                        });
+                    }
+                } else {
+                    // Incremental: Fetch only new entries
+                    let query = supabase
+                        .from('entries')
+                        .select('*')
+                        .eq('session_id', sessionId);
+
+                    if (lastTimestampRef.current) {
+                        query = query.gt('created_at', lastTimestampRef.current);
+                    }
+
+                    const { data, error } = await query.order('created_at', { ascending: true });
+                    if (error) throw error;
+                    if (!isMounted || !data || data.length === 0) return;
+
+                    setEntries((prev) => {
+                        const existingIds = new Set(prev.map((e) => e.id));
+                        const fresh = data.filter((e) => !existingIds.has(e.id));
+                        if (fresh.length === 0) return prev;
+                        const merged = [...prev, ...fresh];
+                        lastTimestampRef.current = merged[merged.length - 1].created_at;
+                        return merged;
+                    });
                 }
-
-                const { data, error } = await query.order('created_at', { ascending: true });
-                if (error) throw error;
-                if (!isMounted || !data || data.length === 0) return;
-
-                setEntries((prev) => {
-                    const existingIds = new Set(prev.map((e) => e.id));
-                    const fresh = data.filter((e) => !existingIds.has(e.id));
-                    if (fresh.length === 0) return prev;
-                    const merged = [...prev, ...fresh];
-                    lastTimestampRef.current = merged[merged.length - 1].created_at;
-                    return merged;
-                });
             } catch (err) {
                 console.error('[JoinSession] Polling error:', err);
             }
@@ -232,6 +267,24 @@ export default function JoinSession() {
             setInfoModal('Failed to submit word. Please try again.');
         } finally {
             setSubmitting(false);
+        }
+    };
+
+    const handleDeleteWord = async (entryId: string) => {
+        try {
+            // Delete from database
+            const { error } = await supabase
+                .from('entries')
+                .delete()
+                .eq('id', entryId);
+
+            if (error) throw error;
+
+            // Update local state to remove the deleted entry
+            setEntries((prev) => prev.filter((e) => e.id !== entryId));
+        } catch (err) {
+            console.error('Error deleting word:', err);
+            setInfoModal('Failed to delete word. Please try again.');
         }
     };
 
@@ -413,37 +466,61 @@ export default function JoinSession() {
                                     </form>
                                 </div>
 
-                                {/* Word Cloud Display */}
-                                <div className="card min-h-[500px]">
+                                {/* My Words List */}
+                                <div className="card">
                                     <div className="flex items-center justify-between mb-4">
                                         <h3 className="text-lg font-semibold text-gray-800 dark:text-white">
-                                            Live Word Cloud
+                                            My Words
                                         </h3>
-                                        {/* Connection Status Indicator */}
-                                        <div className="flex items-center gap-2 text-sm">
-                                            {connectionStatus === 'connected' && (
-                                                <>
-                                                    <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
-                                                    <span className="text-green-600 dark:text-green-400">Live</span>
-                                                </>
-                                            )}
-                                            {connectionStatus === 'connecting' && (
-                                                <>
-                                                    <span className="w-2 h-2 bg-yellow-500 rounded-full animate-pulse"></span>
-                                                    <span className="text-yellow-600 dark:text-yellow-400">Connecting...</span>
-                                                </>
-                                            )}
-                                            {connectionStatus === 'disconnected' && (
-                                                <>
-                                                    <span className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></span>
-                                                    <span className="text-blue-600 dark:text-blue-400">Auto-updating</span>
-                                                </>
-                                            )}
+                                        <span className="text-sm text-gray-500 dark:text-gray-400">
+                                            {entries.filter(e => e.participant_name === nickname).length} words submitted
+                                        </span>
+                                    </div>
+
+                                    {entries.filter(e => e.participant_name === nickname).length === 0 ? (
+                                        <div className="text-center py-12">
+                                            <svg className="w-16 h-16 text-gray-300 dark:text-gray-600 mx-auto mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
+                                            </svg>
+                                            <p className="text-gray-500 dark:text-gray-400">No words submitted yet</p>
+                                            <p className="text-sm text-gray-400 dark:text-gray-500 mt-1">Start by typing a word above</p>
                                         </div>
-                                    </div>
-                                    <div className="w-full h-[500px]">
-                                        <WordCloud entries={entries} rotationRangeDeg={0} />
-                                    </div>
+                                    ) : (
+                                        <div className="space-y-2 max-h-[500px] overflow-y-auto">
+                                            {entries
+                                                .filter(e => e.participant_name === nickname)
+                                                .slice()
+                                                .reverse()
+                                                .map((entry) => (
+                                                    <motion.div
+                                                        key={entry.id}
+                                                        initial={{ opacity: 0, x: -20 }}
+                                                        animate={{ opacity: 1, x: 0 }}
+                                                        exit={{ opacity: 0, x: 20 }}
+                                                        className="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800 rounded-lg group hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                                                    >
+                                                        <div className="flex items-center gap-3 flex-1 min-w-0">
+                                                            <div
+                                                                className="w-3 h-3 rounded-full flex-shrink-0"
+                                                                style={{ backgroundColor: entry.color }}
+                                                            ></div>
+                                                            <span className="text-gray-800 dark:text-white font-medium truncate">
+                                                                {entry.text}
+                                                            </span>
+                                                        </div>
+                                                        <button
+                                                            onClick={() => handleDeleteWord(entry.id)}
+                                                            className="flex-shrink-0 p-2 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
+                                                            title="Delete this word"
+                                                        >
+                                                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                                            </svg>
+                                                        </button>
+                                                    </motion.div>
+                                                ))}
+                                        </div>
+                                    )}
                                 </div>
                             </motion.div>
                         )}

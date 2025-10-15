@@ -1,10 +1,11 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, useMemo } from 'react';
 // d3-cloud handles pixel-perfect collision to prevent overlap
 import cloud from 'd3-cloud';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { Entry } from '../types';
 import { processWordCloudData, type ProcessorOptions } from '../lib/wordCloudProcessor';
-import type { SemanticGroup, Tier } from '../lib/semanticGrouping';
+import type { SemanticGroup, SemanticVariant, Tier } from '../lib/semanticGrouping';
+import type { Language } from '../lib/multilingualNLP';
 
 interface WordCloudProps {
   entries: Entry[];
@@ -18,14 +19,48 @@ interface WordCloudProps {
   minOccurrence?: number;
   enableSpamFilter?: boolean;
   semanticGrouping?: boolean;
+  onGroupsUpdate?: (groups: SemanticGroup[]) => void;
 }
 
-interface PositionedGroup extends SemanticGroup {
+interface RenderWord {
+  id: string;
+  canonical: string;
+  displayText: string;
+  totalCount: number;
+  tier: Tier;
   x: number;
   y: number;
   fontSize: number;
   rotation: number;
+  colors: string[];
+  variants: SemanticVariant[];
+  languages: Set<Language>;
+  isVariant: boolean;
+  parentCanonical?: string;
+  parentDisplayText?: string;
 }
+
+// Deterministic pseudo-random generator so the same data yields the same layout.
+const createSeededRandom = (seed: number) => {
+  let value = seed % 2147483647;
+  if (value <= 0) value += 2147483646;
+  return () => {
+    value = (value * 16807) % 2147483647;
+    return (value - 1) / 2147483646;
+  };
+};
+
+const buildLayoutSeed = (groups: SemanticGroup[]) => {
+  if (groups.length === 0) return 1;
+  let hash = 0;
+  for (const group of groups) {
+    const key = `${group.canonical}|${group.totalCount}|${group.tier}|${group.displayText}`;
+    for (let i = 0; i < key.length; i++) {
+      hash = (hash * 31 + key.charCodeAt(i)) | 0;
+    }
+  }
+  return Math.abs(hash) + 1;
+};
 
 // (BoundingBox removed; d3-cloud provides collision handling)
 
@@ -36,6 +71,9 @@ const TIER_FONT_RANGES: Record<Tier, { min: number; max: number; weight: number;
   B: { min: 32, max: 48, weight: 600, opacity: 0.95 },
   C: { min: 24, max: 36, weight: 500, opacity: 0.75 },
 };
+
+const VARIANT_MIN_COUNT = 2;
+const MAX_HIGHLIGHT_VARIANTS = 2;
 
 export default function WordCloud({
   entries,
@@ -48,15 +86,17 @@ export default function WordCloud({
   minOccurrence = 2,
   enableSpamFilter = true,
   semanticGrouping = true,
+  onGroupsUpdate,
 }: WordCloudProps) {
   const [groups, setGroups] = useState<SemanticGroup[]>([]);
-  const [words, setWords] = useState<PositionedGroup[]>([]);
+  const [words, setWords] = useState<RenderWord[]>([]);
   const [processing, setProcessing] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [measuredSize, setMeasuredSize] = useState<{ w: number; h: number }>({
     w: containerWidth ?? 0,
     h: containerHeight ?? 0
   });
+  const layoutSeed = useMemo(() => buildLayoutSeed(groups), [groups]);
 
   // Measure parent container if explicit width/height not provided
   useEffect(() => {
@@ -83,6 +123,9 @@ export default function WordCloud({
     const processEntries = async () => {
       if (entries.length === 0) {
         setGroups([]);
+        if (onGroupsUpdate) {
+          onGroupsUpdate([]);
+        }
         return;
       }
 
@@ -99,6 +142,14 @@ export default function WordCloud({
 
         const processedGroups = await processWordCloudData(entries, options);
         setGroups(processedGroups);
+        if (onGroupsUpdate) {
+          const snapshot = processedGroups.map((group) => ({
+            ...group,
+            variants: group.variants.map((variant) => ({ ...variant })),
+            languages: new Set(group.languages),
+          }));
+          onGroupsUpdate(snapshot);
+        }
       } catch (error) {
         console.error('[WordCloud] Processing error:', error);
         setGroups([]);
@@ -108,7 +159,7 @@ export default function WordCloud({
     };
 
     processEntries();
-  }, [entries, displayMode, showPhrases, minOccurrence, enableSpamFilter, semanticGrouping]);
+  }, [entries, displayMode, showPhrases, minOccurrence, enableSpamFilter, semanticGrouping, onGroupsUpdate]);
 
   // Calculate font size based on tier and count
   const getFontSize = (group: SemanticGroup, maxCount: number): number => {
@@ -135,17 +186,44 @@ export default function WordCloud({
 
     const maxCount = Math.max(...groups.map(g => g.totalCount));
 
-    // Prepare words with desired font sizes; d3-cloud sorts by size desc internally
-    const d3Words = groups.map((g) => ({
+    const baseWords = groups.map((g) => ({
       text: g.displayText,
       size: getFontSize(g, maxCount),
       __group: g,
     }));
 
+    const variantWords = showPhrases
+      ? groups.flatMap((g) => {
+          const baseSize = getFontSize(g, maxCount);
+          const candidates = g.variants
+            .filter((variant) => variant.count >= VARIANT_MIN_COUNT && variant.text.toLowerCase() !== g.displayText.toLowerCase())
+            .sort((a, b) => b.count - a.count)
+            .slice(0, MAX_HIGHLIGHT_VARIANTS);
+
+          return candidates.map((variant) => {
+            const ratio = Math.min(variant.count / Math.max(g.totalCount, 1), 1);
+            const factor = Math.max(0.55, Math.min(0.9, 0.55 + 0.35 * ratio));
+            const size = Math.max(28, baseSize * factor);
+            return {
+              text: variant.text,
+              size,
+              __group: g,
+              __variant: variant,
+              __isVariant: true,
+            };
+          });
+        })
+      : [];
+
+    const d3Words = [...baseWords, ...variantWords];
+
+    const seededRandom = createSeededRandom(layoutSeed);
+    const rotationRandom = createSeededRandom(layoutSeed ^ 0x9e3779b9);
+
     const rotateFn = () => {
       if (!rotationRangeDeg || rotationRangeDeg <= 0) return 0;
       // Favor clarity: 0 or 90 when rotation allowed
-      return Math.random() < 0.5 ? 0 : 90;
+      return rotationRandom() < 0.5 ? 0 : 90;
     };
 
     const paddingFn = (d: any) => Math.max(8, Math.round((d.size as number) * 0.18));
@@ -155,7 +233,7 @@ export default function WordCloud({
       return range.weight;
     };
 
-    const layout = cloud()
+    const layout = (cloud() as any)
       .size([cw, ch])
       .words(d3Words as any)
       .padding(paddingFn as any)
@@ -165,22 +243,37 @@ export default function WordCloud({
       .fontSize((d: any) => d.size as number)
       .spiral('archimedean')
       .on('end', (placed: any[]) => {
-        const placedWords: PositionedGroup[] = placed.map((w: any) => {
+        const placedWords: RenderWord[] = placed.map((w: any) => {
           const g: SemanticGroup = w.__group;
+          const variant: SemanticVariant | undefined = w.__variant;
+          const isVariant = Boolean(variant);
+          const displayText = variant ? variant.text : g.displayText;
+          const totalCount = variant ? variant.count : g.totalCount;
+          const id = variant ? `${g.canonical}::${variant.normalized}` : g.canonical;
+
           return {
-            ...g,
+            id,
+            canonical: g.canonical,
+            displayText,
+            totalCount,
+            tier: g.tier,
             x: (w.x || 0) + cw / 2,
             y: (w.y || 0) + ch / 2,
             fontSize: w.size,
             rotation: w.rotate || 0,
             colors: g.colors,
-            tier: g.tier,
-          } as PositionedGroup;
+            variants: g.variants,
+            languages: new Set(g.languages),
+            isVariant,
+            parentCanonical: variant ? g.canonical : undefined,
+            parentDisplayText: variant ? g.displayText : undefined,
+          };
         });
         setWords(placedWords);
         layoutRef.current = null;
       });
 
+    layout.random(seededRandom);
     layoutRef.current = layout;
     layout.start();
 
@@ -188,13 +281,18 @@ export default function WordCloud({
       try { layout.stop(); } catch {}
       layoutRef.current = null;
     };
-  }, [groups, containerWidth, containerHeight, measuredSize.w, measuredSize.h, rotationRangeDeg]);
+  }, [groups, containerWidth, containerHeight, measuredSize.w, measuredSize.h, rotationRangeDeg, layoutSeed, showPhrases]);
 
   const cw = containerWidth ?? measuredSize.w;
   const ch = containerHeight ?? measuredSize.h;
 
   // Build rich tooltip content
-  const getTooltipContent = (word: PositionedGroup): string => {
+  const getTooltipContent = (word: RenderWord): string => {
+    if (word.isVariant) {
+      const parentLabel = word.parentDisplayText || word.parentCanonical || word.canonical;
+      return `"${word.displayText}" - ${word.totalCount} mention${word.totalCount > 1 ? 's' : ''}\nPart of "${parentLabel}"`;
+    }
+
     if (word.variants.length === 1) {
       return `"${word.displayText}" - ${word.totalCount} mention${word.totalCount > 1 ? 's' : ''}`;
     }
@@ -243,6 +341,14 @@ export default function WordCloud({
         {words.map((word, index) => {
           const tierStyle = TIER_FONT_RANGES[word.tier];
           const primaryColor = word.colors[0] || '#6366f1'; // Fallback color
+          const isVariant = word.isVariant;
+          const displayOpacity = isVariant ? Math.min(1, tierStyle.opacity * 0.85) : tierStyle.opacity;
+          const fontWeight = isVariant ? Math.max(400, tierStyle.weight - 200) : tierStyle.weight;
+          const textShadow = isVariant
+            ? '1px 1px 4px rgba(0,0,0,0.18)'
+            : word.tier === 'S' || word.tier === 'A'
+              ? '3px 3px 10px rgba(0,0,0,0.3)'
+              : '2px 2px 6px rgba(0,0,0,0.2)';
 
           // Progressive animation delays by tier
           const tierDelays = { S: 0, A: 0.1, B: 0.2, C: 0.3 };
@@ -250,14 +356,14 @@ export default function WordCloud({
 
           return (
             <div
-              key={`${word.canonical}-${index}`}
+              key={word.id}
               className="absolute"
               style={{ left: word.x, top: word.y, transform: 'translate(-50%, -50%)' }}
             >
               <motion.div
                 initial={{ opacity: 0, scale: 0 }}
                 animate={{
-                  opacity: tierStyle.opacity,
+                  opacity: displayOpacity,
                   scale: 1,
                   rotate: word.rotation
                 }}
@@ -271,11 +377,9 @@ export default function WordCloud({
                 className="font-bold whitespace-nowrap select-none font-chinese group cursor-default hover:scale-110 transition-transform"
                 style={{
                   fontSize: `${word.fontSize}px`,
-                  fontWeight: tierStyle.weight,
+                  fontWeight,
                   color: primaryColor,
-                  textShadow: word.tier === 'S' || word.tier === 'A'
-                    ? '3px 3px 10px rgba(0,0,0,0.3)'
-                    : '2px 2px 6px rgba(0,0,0,0.2)',
+                  textShadow,
                   // Z-index: combine tier priority + fontSize for guaranteed layering
                   // Large words ALWAYS appear on top of smaller ones
                   zIndex: (word.tier === 'S' ? 1000 :
