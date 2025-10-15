@@ -3,7 +3,7 @@ import { useNavigate, Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { supabase } from '../lib/supabase';
 import type { CreateSessionData } from '../types';
-import { buildShareUrl, slugifyTitle } from '../lib/share';
+import { buildShareUrl } from '../lib/share';
 
 export default function CreateSession() {
     const navigate = useNavigate();

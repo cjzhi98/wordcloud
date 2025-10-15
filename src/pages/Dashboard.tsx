@@ -72,10 +72,6 @@ export default function Dashboard() {
     }
   };
 
-  const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text);
-  };
-
   const [confirmAction, setConfirmAction] = useState<null | { type: 'disable' | 'delete'; session: Session }>(null);
   const [infoMessage, setInfoMessage] = useState<string | null>(null);
 
