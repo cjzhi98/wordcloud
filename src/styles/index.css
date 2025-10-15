@@ -33,7 +33,7 @@
   }
 
   .card {
-    @apply bg-white dark:bg-gray-800 rounded-2xl shadow-youth p-4 sm:p-6;
+    @apply bg-white dark:bg-gray-800 rounded-xl sm:rounded-2xl shadow-youth p-3 sm:p-4 md:p-6;
   }
 }
 
